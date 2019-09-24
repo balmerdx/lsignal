@@ -435,6 +435,38 @@ void TestDisconnectConnection()
 		delete pb;
 }
 
+void TestDestroySignal()
+{
+	TestRunner::StartTest(MethodName);
+	std::vector<TestB*> listeners;
+
+	{
+		TestA ta;
+		const size_t count = 1000;
+		for(size_t i=0; i<count; i++)
+		{
+			TestB* pb = new TestB();
+			listeners.push_back(pb);
+			ta.sigA.connect(pb, &TestB::ReceiveSigA, pb);
+		}
+
+		for(size_t i=0; i<count; i+=2)
+		{
+			ta.sigA.disconnect(listeners[i]->explicitConnectionA);
+		}
+
+		for(size_t i=0; i<count; i+=3)
+		{
+			delete listeners[i];
+			listeners[i] = nullptr;
+		}
+	}
+
+	for(TestB* pb : listeners)
+		delete pb;
+}
+
+
 int main(int argc, char *argv[])
 {
 	(void)argc;
@@ -453,7 +485,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestSignalInClass);
 	ExecuteTest(TestSignalDestroyListener);
 	ExecuteTest(TestDisconnectConnection);
-
+	ExecuteTest(TestDestroySignal);
 	//std::cin.get();
 
 	return 0;
