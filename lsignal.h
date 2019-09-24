@@ -96,6 +96,7 @@ namespace lsignal
 		friend class signal;
 
 	public:
+		connection();
 		connection(std::shared_ptr<connection_data>&& data);
 		virtual ~connection();
 
@@ -147,17 +148,18 @@ namespace lsignal
 		void connect(signal *sg);
 		void disconnect(signal *sg);
 
-		connection connect(const callback_type& fn, slot *owner = nullptr);
-		connection connect(callback_type&& fn, slot *owner = nullptr);
+		connection connect(const callback_type& fn, slot *owner);
+		connection connect(callback_type&& fn, slot *owner);
 
 		template<typename T, typename U>
-		connection connect(T *p, const U& fn, slot *owner = nullptr);
+		connection connect(T *p, const U& fn, slot *owner);
 
 		void disconnect(const connection& connection);
 		void disconnect(slot *owner);
 
 		void disconnect_all();
 
+		//Return last called signal result.
 		R operator() (Args... args);
 
 		template<typename T>

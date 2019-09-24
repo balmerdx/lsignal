@@ -13,6 +13,11 @@ namespace lsignal
 
 	}
 
+	connection::connection()
+	{
+
+	}
+	
 	connection::connection(std::shared_ptr<connection_data>&& data)
 		: _data(std::move(data))
 	{

@@ -147,7 +147,7 @@ void CallSignalWithSingleConnection_SignalShouldBeCalled()
 		AssertHelper::VerifyValue(p1, paramTwo, "Second parameter should be as expected.");
 	};
 
-	sg.connect(receiver);
+	sg.connect(receiver, nullptr);
 
 	sg(paramOne, paramTwo);
 
@@ -173,8 +173,8 @@ void CallSignalWithMultipleConnections_SignalShouldBeCalled()
 		AssertHelper::VerifyValue(p1, paramTwo, "Second parameter should be as expected.");
 	};
 
-	sg.connect(receiver);
-	sg.connect(receiver);
+	sg.connect(receiver, nullptr);
+	sg.connect(receiver, nullptr);
 
 	sg(paramOne, paramTwo);
 
@@ -246,8 +246,8 @@ void CreateSignalToSignalConnection_WhenFirstSignalIsDestroyed_SecondSignalShoul
 	{
 		lsignal::signal<void()> sigOne;
 
-		sigOne.connect(receiverOne);
-		sigTwo.connect(receiverTwo);
+		sigOne.connect(receiverOne, nullptr);
+		sigTwo.connect(receiverTwo, nullptr);
 
 		sigOne.connect(&sigTwo);
 
@@ -284,8 +284,8 @@ void CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShoul
 	{
 		lsignal::signal<void()> sigTwo;
 
-		sigOne.connect(receiverOne);
-		sigTwo.connect(receiverTwo);
+		sigOne.connect(receiverOne, nullptr);
+		sigTwo.connect(receiverTwo, nullptr);
 
 		sigOne.connect(&sigTwo);
 
@@ -304,6 +304,137 @@ void CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShoul
 	AssertHelper::VerifyValue(receiverTwoCalled, false, "Second receiver should not be called.");
 }
 
+//Test class signal/slot
+
+static int receiveSigACount;
+static int receiveSigBCount;
+
+class TestA : public lsignal::slot
+{
+public:
+	lsignal::signal<void(int data)> sigA;
+
+	void ReceiveSigB(const std::string& data)
+	{
+		dataB = data;
+		receiveSigBCount++;
+	}
+
+	std::string dataB;
+};
+
+class TestB : public lsignal::slot
+{
+public:
+	lsignal::signal<void(const std::string& data)> sigB;
+
+	void ReceiveSigA(int data)
+	{
+		//std::cout << "ReceiveSigA = " << data << std::endl;
+		dataA = data;
+		receiveSigACount++;
+	}
+
+	int dataA;
+
+	lsignal::connection explicitConnectionA;
+};
+
+
+void TestSignalInClass()
+{
+	TestRunner::StartTest(MethodName);
+
+	int dataA = 1023;
+	std::string dataB = "DFBZ12Paql";
+	TestA ta;
+	TestB tb;
+
+	ta.sigA.connect(&tb, &TestB::ReceiveSigA, &tb);
+	tb.sigB.connect(&ta, &TestA::ReceiveSigB, &ta);
+
+	ta.sigA(dataA);
+	tb.sigB(dataB);
+
+	AssertHelper::VerifyValue(true, tb.dataA==dataA, "Verify dataA");
+	AssertHelper::VerifyValue(true, ta.dataB==dataB, "Verify dataB");
+}
+
+void TestSignalDestroyListener()
+{
+	TestRunner::StartTest(MethodName);
+	std::vector<TestB*> listeners;
+	TestA ta;
+	const size_t count = 1000;
+	for(size_t i=0; i<count; i++)
+	{
+		TestB* pb = new TestB();
+		listeners.push_back(pb);
+		ta.sigA.connect(pb, &TestB::ReceiveSigA, pb);
+	}
+
+	receiveSigACount = 0;
+	ta.sigA(23);
+	AssertHelper::VerifyValue(true, receiveSigACount==count, "Verify siga count1");	
+
+	for(size_t i=0; i<count; i+=2)
+	{
+		delete listeners[i];
+		listeners[i] = nullptr;
+	}
+
+	receiveSigACount = 0;
+	ta.sigA(34);
+	AssertHelper::VerifyValue(true, receiveSigACount==count/2, "Verify siga count/2");
+
+	receiveSigACount = 0;
+	ta.sigA.disconnect_all();
+	ta.sigA(45);
+	AssertHelper::VerifyValue(true, receiveSigACount==0, "Verify disconnect_all");
+
+	for(TestB* pb : listeners)
+		delete pb;
+}
+
+void TestDisconnectConnection()
+{
+	TestRunner::StartTest(MethodName);
+	std::vector<TestB*> listeners;
+	TestA ta;
+	const size_t count = 1000;
+	for(size_t i=0; i<count; i++)
+	{
+		TestB* pb = new TestB();
+		listeners.push_back(pb);
+		pb->explicitConnectionA = ta.sigA.connect(pb, &TestB::ReceiveSigA, pb);
+	}
+
+	receiveSigACount = 0;
+	ta.sigA(23);
+	AssertHelper::VerifyValue(true, receiveSigACount==count, "Verify siga count1");	
+
+	for(size_t i=0; i<count; i+=2)
+	{
+		ta.sigA.disconnect(listeners[i]->explicitConnectionA);
+	}
+
+	receiveSigACount = 0;
+	ta.sigA(34);
+	AssertHelper::VerifyValue(true, receiveSigACount==count/2, "Verify siga count/2");
+
+	receiveSigACount = 0;
+	for(size_t i=0; i<count; i++)
+	{
+		ta.sigA.disconnect(listeners[i]->explicitConnectionA);
+	}
+
+	ta.sigA(45);
+	AssertHelper::VerifyValue(true, receiveSigACount==0, "Verify disconnect_all");
+
+	for(TestB* pb : listeners)
+		delete pb;
+}
+
 int main(int argc, char *argv[])
 {
 	(void)argc;
@@ -318,6 +449,10 @@ int main(int argc, char *argv[])
 	ExecuteTest(SetSameOwnerToSeveralSignals_AllSignalsShouldBeNotifiedAboutOwnerDestruction);
 	ExecuteTest(CreateSignalToSignalConnection_WhenFirstSignalIsDestroyed_SecondSignalShouldBeNotifed);
 	ExecuteTest(CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShouldBeNotifed);
+
+	ExecuteTest(TestSignalInClass);
+	ExecuteTest(TestSignalDestroyListener);
+	ExecuteTest(TestDisconnectConnection);
 
 	//std::cin.get();
 
