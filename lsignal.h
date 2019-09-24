@@ -160,10 +160,10 @@ namespace lsignal
 		void disconnect_all();
 
 		//Return last called signal result.
-		R operator() (Args... args);
+		R operator() (Args... args) const;
 
 		template<typename T>
-		R operator() (Args... args, const T& agg);
+		R operator() (Args... args, const T& agg) const;
 
 	private:
 		struct joint
@@ -355,7 +355,7 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	R signal<R(Args...)>::operator() (Args... args)
+	R signal<R(Args...)>::operator() (Args... args) const
 	{
 		std::lock_guard<std::mutex> locker(_mutex);
 
@@ -387,7 +387,7 @@ namespace lsignal
 
 	template<typename R, typename... Args>
 	template<typename T>
-	R signal<R(Args...)>::operator() (Args... args, const T& agg)
+	R signal<R(Args...)>::operator() (Args... args, const T& agg) const
 	{
 		std::vector<R> result;
 

@@ -466,6 +466,23 @@ void TestDestroySignal()
 		delete pb;
 }
 
+void TestNotInitedFunction()
+{
+	TestRunner::StartTest(MethodName);
+
+	typedef lsignal::signal<void(int, bool)> signal_type;
+	signal_type sg;
+	signal_type::callback_type receiver = [](int, bool){};
+
+	int paramOne = 7;
+	bool paramTwo = true;
+
+	sg.connect(receiver, nullptr);
+
+	sg(paramOne, paramTwo);
+
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -486,6 +503,8 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestSignalDestroyListener);
 	ExecuteTest(TestDisconnectConnection);
 	ExecuteTest(TestDestroySignal);
+
+	ExecuteTest(TestNotInitedFunction);
 	//std::cin.get();
 
 	return 0;
