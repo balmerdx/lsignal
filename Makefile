@@ -6,7 +6,7 @@ CXX?=g++
 CXXFLAGS?=-std=c++11 -O3 -Wall
 LDFLAGS?=
 EXECUTABLE=lsignal
-SOURCES=main.cpp
+SOURCES=tests.cpp lsignal.cpp
 OBJECTS=$(SOURCES:.cpp=.o)
 
 .PHONY: all

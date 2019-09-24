@@ -22,10 +22,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Original code https://github.com/cpp11nullptr Ievgen Polyvanyi
+Cloned to https://github.com/balmerdx/lsignal
 */
 
-#ifndef LSIGNAL_H
-#define LSIGNAL_H
+#pragma once
 
 #include <functional>
 #include <list>
@@ -84,6 +85,9 @@ namespace lsignal
 	{
 		std::function<void(std::shared_ptr<connection_data>)> deleter;
 		std::shared_ptr<connection_data> data;
+
+		connection_cleaner();
+		~connection_cleaner();
 	};
 
 	class connection
@@ -106,39 +110,8 @@ namespace lsignal
 
 	};
 
-	inline connection::connection(std::shared_ptr<connection_data>&& data)
-		: _data(std::move(data))
-	{
-	}
-
-	inline connection::~connection()
-	{
-	}
-
-	inline bool connection::is_locked() const
-	{
-		return _data->locked;
-	}
-
-	inline void connection::set_lock(const bool lock)
-	{
-		_data->locked = lock;
-	}
-
-	inline void connection::disconnect()
-	{
-		decltype(_cleaners) cleaners = _cleaners;
-
-		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
-		{
-			const connection_cleaner& cleaner = *iter;
-
-			cleaner.deleter(cleaner.data);
-		}
-	}
 
 	// slot
-
 	class slot
 		: public connection
 	{
@@ -148,18 +121,7 @@ namespace lsignal
 
 	};
 
-	inline slot::slot()
-		: connection(std::shared_ptr<connection_data>())
-	{
-	}
-
-	inline slot::~slot()
-	{
-		disconnect();
-	}
-
 	// signal
-
 	template<typename>
 	class signal;
 
@@ -537,5 +499,3 @@ namespace lsignal
 		}
 	}
 }
-
-#endif // LSIGNAL_H

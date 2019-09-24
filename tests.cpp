@@ -49,7 +49,7 @@ public:
 	{
 		if (expected != actual)
 		{
-			throw std::exception(MakeString("\n\n  %s\n\n    Excepted: %d\n    Actual: %d", message, expected, actual).c_str());
+			throw std::logic_error(MakeString("\n\n  %s\n\n    Excepted: %d\n    Actual: %d", message, expected, actual));
 		}
 	}
 
@@ -57,7 +57,7 @@ public:
 	{
 		if (expected != actual)
 		{
-			throw std::exception(MakeString("\n\n  %s\n\n    Excepted: %s\n    Actual: %s", message, expected ? "true" : "false", actual ? "true" : "false").c_str());
+			throw std::logic_error(MakeString("\n\n  %s\n\n    Excepted: %s\n    Actual: %s", message, expected ? "true" : "false", actual ? "true" : "false"));
 		}
 	}
 
@@ -319,7 +319,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(CreateSignalToSignalConnection_WhenFirstSignalIsDestroyed_SecondSignalShouldBeNotifed);
 	ExecuteTest(CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShouldBeNotifed);
 
-	std::cin.get();
+	//std::cin.get();
 
 	return 0;
 }
