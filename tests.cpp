@@ -551,7 +551,29 @@ void TestAddConnectionInCallback()
 	AssertHelper::VerifyValue(receiveSigACount==1, true, "receiveSigACount==1");
 	AssertHelper::VerifyValue(connectionAddedInCallbackCalled==true, true, "connectionAddedInCallbackCalled==false");
 }
-//TODO Test remove connection in callback
+
+void TestRemoveConnectionInCallback()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::signal<void()> sg;
+	bool callled = false;
+
+	lsignal::connection explicitConnection =  sg.connect([&callled]()
+		{
+			callled = true;
+		}, nullptr);
+	sg();
+	AssertHelper::VerifyValue(callled, true, "Connection not called");
+
+	sg.connect([&sg, &explicitConnection]()
+		{
+			sg.disconnect(explicitConnection);
+		}, nullptr);
+	sg();
+	callled = false;
+	sg();
+	AssertHelper::VerifyValue(callled, false, "Connection called, but not required it.");
+}
 
 int main(int argc, char *argv[])
 {
@@ -576,6 +598,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestSignalSelfDelete);
 	ExecuteTest(TestSignalCopy);
 	ExecuteTest(TestAddConnectionInCallback);
+	ExecuteTest(TestRemoveConnectionInCallback);
 	//std::cin.get();
 
 	return 0;

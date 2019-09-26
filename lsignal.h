@@ -145,7 +145,7 @@ namespace lsignal
 		bool is_locked() const;
 		void set_lock(const bool lock);
 
-		//Child signals not tested!!!! Adn shuld be not worked propertly!!!!!
+		//Child signals not tested!!!! And shuld be not worked propertly!!!!!
 		void connect(signal *sg);
 		void disconnect(signal *sg);
 
@@ -163,6 +163,7 @@ namespace lsignal
 		//Return last called signal result.
 		R operator() (Args... args) const;
 
+		//!!! Not tested!!!!! And shuld be not worked propertly!!!!!
 		template<typename T>
 		R operator() (Args... args, const T& agg) const;
 
@@ -201,6 +202,7 @@ namespace lsignal
 
 		std::shared_ptr<connection_data> create_connection(callback_type&& fn, slot *owner);
 		void destroy_connection(std::shared_ptr<connection_data> connection);
+		void destroy_connection_internal(std::shared_ptr<connection_data>& connection) const;
 		void add_and_delete_deffered() const;
 
 		connection prepare_connection(connection&& conn);
@@ -411,8 +413,8 @@ namespace lsignal
 				}
 			}
 
-			add_and_delete_deffered();
 			data->_signal_called = false;
+			add_and_delete_deffered();
 			return;
 		} else
 		{
@@ -433,8 +435,8 @@ namespace lsignal
 				}
 			}
 
-			add_and_delete_deffered();
 			data->_signal_called = false;
+			add_and_delete_deffered();
 			return r;
 		}
 	}
@@ -543,7 +545,19 @@ namespace lsignal
 	{
 		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
+		if(data->_signal_called)
+		{
+			data->_deffered_delete_connection.push_back(connection);
+			return;
+		}
 
+		destroy_connection_internal(connection);
+	}
+
+	template<typename R, typename... Args>
+	void signal<R(Args...)>::destroy_connection_internal(std::shared_ptr<connection_data>& connection) const
+	{
+		internal_data* data = _data.get();
 		for (auto iter = data->_callbacks.begin(); iter != data->_callbacks.end(); ++iter)
 		{
 			const joint& jnt = *iter;
@@ -557,7 +571,6 @@ namespace lsignal
 				}
 
 				data->_callbacks.erase(iter);
-
 				break;
 			}
 		}
@@ -574,6 +587,13 @@ namespace lsignal
 		}
 
 		data->_deffered_add_connection.clear();
+
+		for(auto& conn : data->_deffered_delete_connection)
+		{
+			destroy_connection_internal(conn);
+		}
+
+		data->_deffered_delete_connection.clear();
 	}
 
 	template<typename R, typename... Args>
