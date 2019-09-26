@@ -145,6 +145,7 @@ namespace lsignal
 		bool is_locked() const;
 		void set_lock(const bool lock);
 
+		//Child signals not tested!!!! Adn shuld be not worked propertly!!!!!
 		void connect(signal *sg);
 		void disconnect(signal *sg);
 
@@ -165,6 +166,8 @@ namespace lsignal
 		template<typename T>
 		R operator() (Args... args, const T& agg) const;
 
+		//this signal dont have direct connections
+		bool empty() const;
 	private:
 		struct joint
 		{
@@ -173,13 +176,23 @@ namespace lsignal
 			slot *owner;
 		};
 
-		mutable std::mutex _mutex;
-		bool _locked;
+		struct internal_data
+		{
+			mutable std::mutex _mutex;
+			bool _locked = false;
+			bool _signal_called = false;
 
-		std::list<joint> _callbacks;
+			std::list<joint> _callbacks;
 
-		signal *_parent;
-		std::list<signal*> _children;
+			signal *_parent = nullptr;
+			std::list<signal*> _children;
+
+			std::list<std::shared_ptr<connection_data> > _deffered_add_connection;
+			std::list<std::shared_ptr<connection_data> > _deffered_delete_connection;
+		};
+
+		std::shared_ptr<internal_data> _data;
+
 
 		template<typename T, typename U, int... Ns>
 		callback_type construct_mem_fn(const T& fn, U *p, int_sequence<Ns...>) const;
@@ -195,19 +208,18 @@ namespace lsignal
 
 	template<typename R, typename... Args>
 	signal<R(Args...)>::signal()
-		: _locked(false), _parent(nullptr)
+		: _data(std::make_shared<internal_data>())
 	{
 	}
 
 	template<typename R, typename... Args>
 	signal<R(Args...)>::~signal()
 	{
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		for (auto iter = _callbacks.begin(); iter != _callbacks.end(); ++iter)
+		for (const joint& jnt : data->_callbacks)
 		{
-			const joint& jnt = *iter;
-
 			if (jnt.owner != nullptr)
 			{
 				jnt.owner->_data = nullptr;
@@ -215,40 +227,48 @@ namespace lsignal
 			}
 		}
 
-		if (_parent != nullptr)
+		if (data->_parent != nullptr)
 		{
-			_parent->_children.remove(this);
+			data->_parent->_data->_children.remove(this);
 		}
 
-		for (signal *sig : _children)
+		for (signal *sig : data->_children)
 		{
-			sig->_parent = nullptr;
+			sig->_data->_parent = nullptr;
 		}
 	}
 
 	template<typename R, typename... Args>
 	signal<R(Args...)>::signal(const signal& rhs)
-		: _locked(rhs._locked)
+		: _data(std::make_shared<internal_data>())
 	{
-		std::unique_lock<std::mutex> lock_own(_mutex, std::defer_lock);
-		std::unique_lock<std::mutex> lock_rhs(rhs._mutex, std::defer_lock);
+		internal_data* data = _data.get();
+		internal_data* rhs_data = rhs._data.get();
+
+		std::unique_lock<std::mutex> lock_own(data->_mutex, std::defer_lock);
+		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
 
-		copy_callbacks(rhs._callbacks);
+		data->_locked = rhs_data->_locked;
+
+		copy_callbacks(rhs_data->_callbacks);
 	}
 
 	template<typename R, typename... Args>
 	signal<R(Args...)>& signal<R(Args...)>::operator= (const signal& rhs)
 	{
-		std::unique_lock<std::mutex> lock_own(_mutex, std::defer_lock);
-		std::unique_lock<std::mutex> lock_rhs(rhs._mutex, std::defer_lock);
+		internal_data* data = _data.get();
+		internal_data* rhs_data = rhs._data.get();
+
+		std::unique_lock<std::mutex> lock_own(data->_mutex, std::defer_lock);
+		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
 
-		_locked = rhs._locked;
+		data->_locked = rhs_data->_locked;
 
-		copy_callbacks(rhs._callbacks);
+		copy_callbacks(rhs_data->_callbacks);
 
 		return *this;
 	}
@@ -256,42 +276,44 @@ namespace lsignal
 	template<typename R, typename... Args>
 	bool signal<R(Args...)>::is_locked() const
 	{
-		return _locked;
+		return _data.get()->_locked;
 	}
 
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::set_lock(const bool lock)
 	{
-		_locked = lock;
+		_data.get()->_locked = lock;
 	}
 
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::connect(signal *sg)
 	{
-		std::lock_guard<std::mutex> locker_own(_mutex);
-		std::lock_guard<std::mutex> locker_sg(sg->_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker_own(data->_mutex);
+		std::lock_guard<std::mutex> locker_sg(sg->_data->_mutex);
 
-		if (_parent == sg)
+		if (data->_parent == sg)
 		{
 			return;
 		}
 
-		auto iter = std::find(_children.cbegin(), _children.cend(), sg);
+		auto iter = std::find(data->_children.cbegin(), data->_children.cend(), sg);
 
-		if (iter == _children.cend())
+		if (iter == data->_children.cend())
 		{
-			sg->_parent = this;
+			sg->_data->_parent = this;
 
-			_children.push_back(std::move(sg));
+			data->_children.push_back(std::move(sg));
 		}
 	}
 
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::disconnect(signal *sg)
 	{
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		_children.remove(sg);
+		data->_children.remove(sg);
 	}
 
 	template<typename R, typename... Args>
@@ -333,9 +355,10 @@ namespace lsignal
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::disconnect_all()
 	{
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		for (const auto& jnt : _callbacks)
+		for (const auto& jnt : data->_callbacks)
 		{
 			if (jnt.owner != nullptr)
 			{
@@ -343,45 +366,54 @@ namespace lsignal
 				jnt.owner->_cleaners.clear();
 			}
 		}
-		_callbacks.clear();
-		for (auto sig : _children)
+		data->_callbacks.clear();
+		for (auto sig : data->_children)
 		{
-			if (sig->_parent == this) // should be an assert
+			if (sig->_data->_parent == this) // should be an assert
 			{
-				sig->_parent = nullptr;
+				sig->_data->_parent = nullptr;
 			}
 		}
-		_children.clear();
+		data->_children.clear();
 	}
 
 	template<typename R, typename... Args>
 	R signal<R(Args...)>::operator() (Args... args) const
 	{
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		typename std::list<joint>::const_iterator cit_begin, cit_end;
 
-		if (!_locked)
 		{
-			for (signal *sig : _children)
-			{
-				sig->operator()(std::forward<Args>(args)...);
-			}
+			std::lock_guard<std::mutex> locker(data->_mutex);
+			if (data->_locked || data->_signal_called)
+				return R();
+		}
 
-			for (auto iter = _callbacks.cbegin(); iter != _callbacks.cend(); ++iter)
-			{
-				const joint& jnt = *iter;
+		std::shared_ptr<internal_data> data_store(_data);
+		data->_signal_called = true;
 
-				if (!jnt.connection->locked)
+		for (signal *sig : data->_children)
+		{
+			sig->operator()(std::forward<Args>(args)...);
+		}
+
+		for (auto iter = data->_callbacks.cbegin(); iter != data->_callbacks.cend(); ++iter)
+		{
+			const joint& jnt = *iter;
+
+			if (!jnt.connection->locked)
+			{
+				if (std::next(iter, 1) == data->_callbacks.cend())
 				{
-					if (std::next(iter, 1) == _callbacks.cend())
-					{
-						return jnt.callback(std::forward<Args>(args)...);
-					}
-
-					jnt.callback(std::forward<Args>(args)...);
+					data->_signal_called = false;
+					return jnt.callback(std::forward<Args>(args)...);
 				}
+
+				jnt.callback(std::forward<Args>(args)...);
 			}
 		}
 
+		data->_signal_called = false;
 		return R();
 	}
 
@@ -389,20 +421,21 @@ namespace lsignal
 	template<typename T>
 	R signal<R(Args...)>::operator() (Args... args, const T& agg) const
 	{
+		internal_data* data = _data.get();
 		std::vector<R> result;
 
-		std::lock_guard<std::mutex> locker(_mutex);
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		if (!_locked)
+		if (!data->_locked)
 		{
-			for (signal *sig : _children)
+			for (signal *sig : data->_children)
 			{
 				sig->operator()(std::forward<Args>(args)...);
 			}
 
-			result.reserve(_callbacks.size());
+			result.reserve(data->_callbacks.size());
 
-			for (auto iter = _callbacks.cbegin(); iter != _callbacks.cend(); ++iter)
+			for (auto iter = data->_callbacks.cbegin(); iter != data->_callbacks.cend(); ++iter)
 			{
 				const joint& jnt = *iter;
 
@@ -426,6 +459,8 @@ namespace lsignal
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::copy_callbacks(const std::list<joint>& callbacks)
 	{
+		internal_data* data = _data.get();
+		data->_callbacks.clear();
 		for (auto iter = callbacks.begin(); iter != callbacks.end(); ++iter)
 		{
 			const joint& jn = *iter;
@@ -438,7 +473,7 @@ namespace lsignal
 				jnt.connection = jn.connection;
 				jnt.owner = nullptr;
 
-				_callbacks.push_back(std::move(jnt));
+				data->_callbacks.push_back(std::move(jnt));
 			}
 		}
 	}
@@ -470,9 +505,10 @@ namespace lsignal
 		jnt.connection = connection;
 		jnt.owner = owner;
 
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		_callbacks.push_back(std::move(jnt));
+		data->_callbacks.push_back(std::move(jnt));
 
 		return connection;
 	}
@@ -480,9 +516,10 @@ namespace lsignal
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::destroy_connection(std::shared_ptr<connection_data> connection)
 	{
-		std::lock_guard<std::mutex> locker(_mutex);
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		for (auto iter = _callbacks.begin(); iter != _callbacks.end(); ++iter)
+		for (auto iter = data->_callbacks.begin(); iter != data->_callbacks.end(); ++iter)
 		{
 			const joint& jnt = *iter;
 
@@ -494,10 +531,18 @@ namespace lsignal
 					jnt.owner->_cleaners.clear();
 				}
 
-				_callbacks.erase(iter);
+				data->_callbacks.erase(iter);
 
 				break;
 			}
 		}
+	}
+
+	template<typename R, typename... Args>
+	bool signal<R(Args...)>::empty() const
+	{
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
+		return data->_callbacks.empty();
 	}
 }

@@ -320,6 +320,13 @@ public:
 		receiveSigBCount++;
 	}
 
+	void ReceiveDeleteSelf(int data)
+	{
+		std::cout << "TestA::ReceiveDeleteSelf started" << std::endl;
+		delete this;
+		std::cout << "TestA::ReceiveDeleteSelf completed" << std::endl;
+	}
+
 	std::string dataB;
 };
 
@@ -466,23 +473,18 @@ void TestDestroySignal()
 		delete pb;
 }
 
-void TestNotInitedFunction()
+void TestSignalSelfDelete()
 {
 	TestRunner::StartTest(MethodName);
 
-	typedef lsignal::signal<void(int, bool)> signal_type;
-	signal_type sg;
-	signal_type::callback_type receiver = [](int, bool){};
-
-	int paramOne = 7;
-	bool paramTwo = true;
-
-	sg.connect(receiver, nullptr);
-
-	sg(paramOne, paramTwo);
-
+	TestA* pa = new TestA();
+	pa->sigA.connect(pa, &TestA::ReceiveDeleteSelf, pa);
+	pa->sigA(37);
 }
 
+//TODO Test copy signal
+//TODO Test add connection in callback
+//TODO Test remove connection in callback
 
 int main(int argc, char *argv[])
 {
@@ -504,7 +506,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestDisconnectConnection);
 	ExecuteTest(TestDestroySignal);
 
-	ExecuteTest(TestNotInitedFunction);
+	ExecuteTest(TestSignalSelfDelete);
 	//std::cin.get();
 
 	return 0;
