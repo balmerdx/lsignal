@@ -1,3 +1,6 @@
+# balmerdx - multiple bugfix original library
+	see new test for fixed errors 
+
 # lsignal: C++ signal/slot system.
 
 lsignal (or lightweight signal) is a very little and fast C++ thread-safe implementation of signal and
@@ -5,7 +8,7 @@ slot system which is based on modern C++11 code.
 
 ### Requirements
 
-C++ compiler with support C++11.
+C++ compiler with support C++17.
 
 ### How to use
 
