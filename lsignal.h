@@ -156,7 +156,6 @@ namespace lsignal
 		connection connect(T *p, const U& fn, slot *owner);
 
 		void disconnect(const connection& connection);
-		void disconnect(slot *owner);
 
 		void disconnect_all();
 
@@ -164,6 +163,7 @@ namespace lsignal
 		R operator() (Args... args) const;
 
 		//!!! Not tested!!!!! And shuld be not worked propertly!!!!!
+		//Multithread not tested.
 		template<typename T>
 		R operator() (Args... args, const T& agg) const;
 
@@ -174,14 +174,35 @@ namespace lsignal
 		{
 			callback_type callback;
 			std::shared_ptr<connection_data> connection;
-			slot *owner;
+			slot *owner = nullptr;
+
+			joint()
+			{
+			}
+
+			~joint()
+			{
+			}
+
+			joint(joint&& rhs)
+			{
+				callback = std::move(rhs.callback);
+				connection = std::move(rhs.connection);
+				owner = rhs.owner; rhs.owner = nullptr;
+			}
+
+			void operator= (joint&& rhs)
+			{
+				callback = std::move(rhs.callback);
+				connection = std::move(rhs.connection);
+				owner = rhs.owner; rhs.owner = nullptr;
+			}
 		};
 
 		struct internal_data
 		{
 			mutable std::mutex _mutex;
 			bool _locked = false;
-			bool _signal_called = false;
 
 			std::list<joint> _callbacks;
 
@@ -201,12 +222,14 @@ namespace lsignal
 		void copy_callbacks(const std::list<joint>& callbacks);
 
 		std::shared_ptr<connection_data> create_connection(callback_type&& fn, slot *owner);
-		void destroy_connection(std::shared_ptr<connection_data> connection);
+		void destroy_connection(std::shared_ptr<connection_data> connection) const;
+		//destroy_connection widhout lock(mitex)
 		void destroy_connection_internal(std::shared_ptr<connection_data>& connection) const;
-		void add_and_delete_deffered() const;
 
-		connection prepare_connection(connection&& conn);
+		void add_and_delete_deffered(internal_data* data) const;
+		void add_and_delete_deffered_internal(internal_data* data) const;
 
+		void add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const;
 	};
 
 	template<typename R, typename... Args>
@@ -225,7 +248,6 @@ namespace lsignal
 		{
 			if (jnt.owner != nullptr)
 			{
-				jnt.owner->_data = nullptr;
 				jnt.owner->_cleaners.clear();
 			}
 		}
@@ -238,7 +260,11 @@ namespace lsignal
 		for (signal *sig : data->_children)
 		{
 			sig->_data->_parent = nullptr;
+		
 		}
+
+		data->_deffered_add_connection.clear();
+		data->_deffered_delete_connection.clear();
 	}
 
 	template<typename R, typename... Args>
@@ -252,6 +278,7 @@ namespace lsignal
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
+		add_and_delete_deffered_internal(rhs_data);
 
 		data->_locked = rhs_data->_locked;
 
@@ -268,6 +295,7 @@ namespace lsignal
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
+		add_and_delete_deffered_internal(rhs_data);
 
 		data->_locked = rhs_data->_locked;
 
@@ -347,15 +375,6 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	void signal<R(Args...)>::disconnect(slot *owner)
-	{
-		if (owner != nullptr)
-		{
-			destroy_connection(owner->_data);
-		}
-	}
-
-	template<typename R, typename... Args>
 	void signal<R(Args...)>::disconnect_all()
 	{
 		internal_data* data = _data.get();
@@ -365,7 +384,6 @@ namespace lsignal
 		{
 			if (jnt.owner != nullptr)
 			{
-				jnt.owner->_data = nullptr;
 				jnt.owner->_cleaners.clear();
 			}
 		}
@@ -385,16 +403,15 @@ namespace lsignal
 	R signal<R(Args...)>::operator() (Args... args) const
 	{
 		internal_data* data = _data.get();
-		typename std::list<joint>::const_iterator cit_begin, cit_end;
 
 		{
 			std::lock_guard<std::mutex> locker(data->_mutex);
-			if (data->_locked || data->_signal_called)
+			add_and_delete_deffered_internal(data);
+			if (data->_locked)
 				return R();
 		}
 
 		std::shared_ptr<internal_data> data_store(_data);
-		data->_signal_called = true;
 
 		for (signal *sig : data->_children)
 		{
@@ -413,8 +430,7 @@ namespace lsignal
 				}
 			}
 
-			data->_signal_called = false;
-			add_and_delete_deffered();
+			add_and_delete_deffered(data);
 			return;
 		} else
 		{
@@ -435,8 +451,7 @@ namespace lsignal
 				}
 			}
 
-			data->_signal_called = false;
-			add_and_delete_deffered();
+			add_and_delete_deffered(data);
 			return r;
 		}
 	}
@@ -449,6 +464,7 @@ namespace lsignal
 		std::vector<R> result;
 
 		std::lock_guard<std::mutex> locker(data->_mutex);
+		add_and_delete_deffered_internal(data);
 
 		if (!data->_locked)
 		{
@@ -468,6 +484,8 @@ namespace lsignal
 					result.push_back(std::move(jnt.callback(std::forward<Args>(args)...)));
 				}
 			}
+
+			add_and_delete_deffered_internal(data);
 		}
 
 		return agg(std::move(result));
@@ -503,10 +521,8 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	std::shared_ptr<connection_data> signal<R(Args...)>::create_connection(callback_type&& fn, slot *owner)
+	void signal<R(Args...)>::add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const
 	{
-		std::shared_ptr<connection_data> connection = std::make_shared<connection_data>();
-
 		if (owner != nullptr)
 		{
 			auto deleter = [this](std::shared_ptr<connection_data> connection)
@@ -519,9 +535,14 @@ namespace lsignal
 			cleaner.deleter = deleter;
 			cleaner.data = connection;
 
-			owner->_data = connection;
 			owner->_cleaners.emplace_back(cleaner);
 		}
+	}
+
+	template<typename R, typename... Args>
+	std::shared_ptr<connection_data> signal<R(Args...)>::create_connection(callback_type&& fn, slot *owner)
+	{
+		std::shared_ptr<connection_data> connection = std::make_shared<connection_data>();
 
 		joint jnt;
 
@@ -532,26 +553,51 @@ namespace lsignal
 		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
 
-		if(data->_signal_called)
+		if (1)
+		{
 			data->_deffered_add_connection.push_back(std::move(jnt));
-		else
+		} else
+		{
+			add_cleaner(owner, connection);
 			data->_callbacks.push_back(std::move(jnt));
+		}
+
 
 		return connection;
 	}
 
 	template<typename R, typename... Args>
-	void signal<R(Args...)>::destroy_connection(std::shared_ptr<connection_data> connection)
+	void signal<R(Args...)>::destroy_connection(std::shared_ptr<connection_data> connection) const
 	{
 		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
-		if(data->_signal_called)
+
+		for (auto iter = data->_callbacks.begin(); iter != data->_callbacks.end(); ++iter)
 		{
-			data->_deffered_delete_connection.push_back(connection);
-			return;
+			const joint& jnt = *iter;
+			if (jnt.connection == connection)
+			{
+				//dont call destroyed connection in operator()
+				jnt.connection->locked = true;
+				if (jnt.owner != nullptr)
+				{
+					for (auto it = jnt.owner->_cleaners.begin(); it != jnt.owner->_cleaners.end(); ++it)
+					{
+						if (it->data == connection)
+						{
+							jnt.owner->_cleaners.erase(it);
+							break;
+						}
+					}
+				}
+				break;
+			}
 		}
 
-		destroy_connection_internal(connection);
+		if(1)
+			data->_deffered_delete_connection.push_back(connection);
+		else
+			destroy_connection_internal(connection);
 	}
 
 	template<typename R, typename... Args>
@@ -561,15 +607,8 @@ namespace lsignal
 		for (auto iter = data->_callbacks.begin(); iter != data->_callbacks.end(); ++iter)
 		{
 			const joint& jnt = *iter;
-
 			if (jnt.connection == connection)
 			{
-				if (jnt.owner != nullptr)
-				{
-					jnt.owner->_data = nullptr;
-					jnt.owner->_cleaners.clear();
-				}
-
 				data->_callbacks.erase(iter);
 				break;
 			}
@@ -577,22 +616,26 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	void signal<R(Args...)>::add_and_delete_deffered() const
+	void signal<R(Args...)>::add_and_delete_deffered(internal_data* data) const
 	{
-		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
-		for(const joint& jnt : data->_deffered_add_connection)
-		{
-			data->_callbacks.push_back(jnt);
-		}
+		add_and_delete_deffered_internal(data);
+	}
 
+	template<typename R, typename... Args>
+	void signal<R(Args...)>::add_and_delete_deffered_internal(internal_data* data) const
+	{
+		for(auto it = data->_deffered_add_connection.begin(); it!=data->_deffered_add_connection.end(); ++it)
+		{
+			add_cleaner(it->owner, it->connection);
+			data->_callbacks.push_back(std::move(*it));
+		}
 		data->_deffered_add_connection.clear();
 
-		for(auto& conn : data->_deffered_delete_connection)
+		for(auto conn : data->_deffered_delete_connection)
 		{
 			destroy_connection_internal(conn);
 		}
-
 		data->_deffered_delete_connection.clear();
 	}
 
@@ -601,6 +644,6 @@ namespace lsignal
 	{
 		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
-		return data->_callbacks.empty();
+		return data->_callbacks.empty() && data->_deffered_add_connection.empty();
 	}
 }

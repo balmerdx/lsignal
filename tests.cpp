@@ -497,8 +497,6 @@ void TestSignalSelfDelete()
 	pa->sigA(37);
 }
 
-//TODO Test copy signal
-
 void TestSignalCopy()
 {
 	TestRunner::StartTest(MethodName);
@@ -514,8 +512,8 @@ void TestSignalCopy()
 	{
 		receiverCalled = true;
 
-		AssertHelper::VerifyValue(p0, paramOne, "First parameter should be as expected.");
-		AssertHelper::VerifyValue(p1, paramTwo, "Second parameter should be as expected.");
+		AssertHelper::VerifyValue(paramOne, p0, "First parameter should be as expected.");
+		AssertHelper::VerifyValue(paramTwo, p1, "Second parameter should be as expected.");
 	};
 
 	sg.connect(receiver, nullptr);
@@ -524,13 +522,13 @@ void TestSignalCopy()
 	sg2 = sg;
 	sg2(paramOne, paramTwo);
 
-	AssertHelper::VerifyValue(receiverCalled, true, "Receiver2 should be called.");
+	AssertHelper::VerifyValue(true, receiverCalled, "Receiver2 should be called.");
 
 	receiverCalled = false;
 	lsignal::signal<void(int, bool)> sg3 = sg;
 	sg3(paramOne, paramTwo);
 
-	AssertHelper::VerifyValue(receiverCalled, true, "Receiver3 should be called.");
+	AssertHelper::VerifyValue(true, receiverCalled, "Receiver3 should be called.");
 }
 
 void TestAddConnectionInCallback()
@@ -543,13 +541,13 @@ void TestAddConnectionInCallback()
 	lsignal::connection explicitConnectionA = ta.sigA.connect(&ta, &TestA::AddConnectionInCallbackA, &ta);
 	receiveSigACount = 0;
 	ta.sigA(12);
-	AssertHelper::VerifyValue(connectionAddedInCallbackCalled==false, true, "connectionAddedInCallbackCalled==false");
-	AssertHelper::VerifyValue(receiveSigACount==1, true, "receiveSigACount==1");
+	AssertHelper::VerifyValue(false, connectionAddedInCallbackCalled, "connectionAddedInCallbackCalled==false");
+	AssertHelper::VerifyValue(1, receiveSigACount, "receiveSigACount==1");
 	ta.sigA.disconnect(explicitConnectionA);
 	receiveSigACount = 0;
 	ta.sigA(22);
-	AssertHelper::VerifyValue(receiveSigACount==1, true, "receiveSigACount==1");
-	AssertHelper::VerifyValue(connectionAddedInCallbackCalled==true, true, "connectionAddedInCallbackCalled==false");
+	AssertHelper::VerifyValue(1, receiveSigACount, "receiveSigACount==1");
+	AssertHelper::VerifyValue(true, connectionAddedInCallbackCalled, "connectionAddedInCallbackCalled==false");
 }
 
 void TestRemoveConnectionInCallback()
@@ -563,7 +561,7 @@ void TestRemoveConnectionInCallback()
 			callled = true;
 		}, nullptr);
 	sg();
-	AssertHelper::VerifyValue(callled, true, "Connection not called");
+	AssertHelper::VerifyValue(true, callled, "Connection not called");
 
 	sg.connect([&sg, &explicitConnection]()
 		{
@@ -572,7 +570,24 @@ void TestRemoveConnectionInCallback()
 	sg();
 	callled = false;
 	sg();
-	AssertHelper::VerifyValue(callled, false, "Connection called, but not required it.");
+	AssertHelper::VerifyValue(false, callled, "Connection called, but not required it.");
+}
+
+void TestAddAndRemoveConnection()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::signal<void()> sg;
+	bool callled = false;
+
+	lsignal::connection explicitConnection = sg.connect([&callled]()
+	{
+		callled = true;
+	}, nullptr);
+
+	sg.disconnect(explicitConnection);
+	sg();
+
+	AssertHelper::VerifyValue(false, callled, "Connection called, but not required it.");
 }
 
 int main(int argc, char *argv[])
@@ -599,6 +614,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestSignalCopy);
 	ExecuteTest(TestAddConnectionInCallback);
 	ExecuteTest(TestRemoveConnectionInCallback);
+	ExecuteTest(TestAddAndRemoveConnection);
 	//std::cin.get();
 
 	return 0;
