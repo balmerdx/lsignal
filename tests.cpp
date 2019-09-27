@@ -397,7 +397,7 @@ void TestSignalDestroyListener()
 
 	receiveSigACount = 0;
 	ta.sigA(23);
-	AssertHelper::VerifyValue(true, receiveSigACount==count, "Verify siga count1");	
+	AssertHelper::VerifyValue(count, receiveSigACount, "Verify siga count1");
 
 	for(size_t i=0; i<count; i+=2)
 	{
@@ -407,12 +407,12 @@ void TestSignalDestroyListener()
 
 	receiveSigACount = 0;
 	ta.sigA(34);
-	AssertHelper::VerifyValue(true, receiveSigACount==count/2, "Verify siga count/2");
+	AssertHelper::VerifyValue(count / 2, receiveSigACount, "Verify siga count/2");
 
 	receiveSigACount = 0;
 	ta.sigA.disconnect_all();
 	ta.sigA(45);
-	AssertHelper::VerifyValue(true, receiveSigACount==0, "Verify disconnect_all");
+	AssertHelper::VerifyValue(0, receiveSigACount, "Verify disconnect_all");
 
 	for(TestB* pb : listeners)
 		delete pb;
@@ -590,6 +590,68 @@ void TestAddAndRemoveConnection()
 	AssertHelper::VerifyValue(false, callled, "Connection called, but not required it.");
 }
 
+void TestDestroyOwnerBeforeSignal()
+{
+	TestRunner::StartTest(MethodName);
+
+	TestB* pb = new TestB();
+
+	lsignal::signal<void(int data)> sigA;
+	sigA.connect(pb, &TestB::ReceiveSigA, pb);
+	
+	sigA(37);
+
+	delete pb;
+}
+
+void TestCallSignalAfterDeleteOwner()
+{
+	TestRunner::StartTest(MethodName);
+
+	TestB* pb = new TestB();
+
+	lsignal::signal<void(int data)> sigA;
+	sigA.connect(pb, &TestB::ReceiveSigA, pb);
+
+	sigA(37);
+
+	delete pb;
+
+	receiveSigACount = 0;
+	sigA(42);
+	AssertHelper::VerifyValue(0, receiveSigACount, "Connection called, but not required it.");
+}
+
+void TestCallSignalAfterDeleteOwner2()
+{
+	TestRunner::StartTest(MethodName);
+
+	TestB* pb = new TestB();
+
+	lsignal::signal<void(int data)> sigA;
+	sigA.connect(pb, &TestB::ReceiveSigA, pb);
+
+	delete pb;
+
+	receiveSigACount = 0;
+	sigA(42);
+	AssertHelper::VerifyValue(0, receiveSigACount, "Connection called, but not required it.");
+}
+
+void TestDeleteOwnerAndDisconnectAll()
+{
+	TestRunner::StartTest(MethodName);
+
+	TestB* pb = new TestB();
+
+	lsignal::signal<void(int data)> sigA;
+	sigA.connect(pb, &TestB::ReceiveSigA, pb);
+
+	delete pb;
+	sigA.disconnect_all();
+}
+
+
 int main(int argc, char *argv[])
 {
 	(void)argc;
@@ -615,6 +677,11 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestAddConnectionInCallback);
 	ExecuteTest(TestRemoveConnectionInCallback);
 	ExecuteTest(TestAddAndRemoveConnection);
+
+	ExecuteTest(TestDestroyOwnerBeforeSignal);
+	ExecuteTest(TestCallSignalAfterDeleteOwner);
+	ExecuteTest(TestCallSignalAfterDeleteOwner2);
+	ExecuteTest(TestDeleteOwnerAndDisconnectAll);
 	//std::cin.get();
 
 	return 0;
