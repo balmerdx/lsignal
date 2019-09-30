@@ -666,6 +666,30 @@ void TestRecursiveSignalCall()
 	sig();
 }
 
+void TestDisconnectAllInSignal()
+{
+	TestRunner::StartTest(MethodName);
+
+	TestA* pa = new TestA();
+	TestB* pb = new TestB();
+	pa->sigA.connect(pb, &TestB::ReceiveSigA, pb);
+
+	receiveSigACount = 0;
+	pa->sigA(37);
+	AssertHelper::VerifyValue(1, receiveSigACount, "Verify disconnect_all");
+	pa->sigA.connect([pa](int) {pa->sigA.disconnect_all(); },  pa);
+
+	pa->sigA(37);
+
+	receiveSigACount = 0;
+	pa->sigA(37);
+	AssertHelper::VerifyValue(0, receiveSigACount, "Verify disconnect_all");
+
+	delete pa;
+	delete pb;
+}
+
+
 int main(int argc, char *argv[])
 {
 	(void)argc;
@@ -696,7 +720,8 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestCallSignalAfterDeleteOwner);
 	ExecuteTest(TestCallSignalAfterDeleteOwner2);
 	ExecuteTest(TestDeleteOwnerAndDisconnectAll);
-	ExecuteTest(TestRecursiveSignalCall);
+	//ExecuteTest(TestRecursiveSignalCall); //shuld be assert in function
+	ExecuteTest(TestDisconnectAllInSignal);
 	//std::cin.get();
 
 	return 0;

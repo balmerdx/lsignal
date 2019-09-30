@@ -264,12 +264,38 @@ namespace lsignal
 
 		for (signal *sig : data->_children)
 		{
+			LSIGNAL_ASSERT(sig->_data->_parent == this);
 			sig->_data->_parent = nullptr;
-		
 		}
 
 		data->_deffered_add_connection.clear();
 		data->_deffered_delete_connection.clear();
+	}
+
+	template<typename R, typename... Args>
+	void signal<R(Args...)>::disconnect_all()
+	{
+		internal_data* data = _data.get();
+		std::lock_guard<std::mutex> locker(data->_mutex);
+
+		for (auto& jnt : data->_callbacks)
+		{
+			clear_cleaner(jnt);
+			data->_deffered_delete_connection.push_back(jnt.connection);
+		}
+
+		for (joint& jnt : data->_deffered_add_connection)
+			clear_cleaner(jnt);
+
+		for (auto sig : data->_children)
+		{
+			LSIGNAL_ASSERT(sig->_data->_parent == this);
+			sig->_data->_parent = nullptr;
+		}
+
+		//data->_callbacks.clear(); dont clear callnacks, only lock in clear_cleaner
+		data->_deffered_add_connection.clear();
+		data->_children.clear();
 	}
 
 	template<typename R, typename... Args>
@@ -378,32 +404,6 @@ namespace lsignal
 	{
 		destroy_connection(connection._data);
 	}
-
-	template<typename R, typename... Args>
-	void signal<R(Args...)>::disconnect_all()
-	{
-		internal_data* data = _data.get();
-		std::lock_guard<std::mutex> locker(data->_mutex);
-
-		data->_deffered_add_connection.clear();
-		//add_and_delete_deffered_internal(data);
-
-		for (auto& jnt : data->_callbacks)
-			clear_cleaner(jnt);
-		for (joint& jnt : data->_deffered_add_connection)
-			clear_cleaner(jnt);
-
-		data->_callbacks.clear();
-		for (auto sig : data->_children)
-		{
-			if (sig->_data->_parent == this) // should be an assert
-			{
-				sig->_data->_parent = nullptr;
-			}
-		}
-		data->_children.clear();
-	}
-
 
 	template<typename R, typename... Args>
 	R signal<R(Args...)>::operator() (Args... args) const
