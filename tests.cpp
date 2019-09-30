@@ -3,6 +3,9 @@
 #include <exception>
 #include <stack>
 #include <typeinfo>
+#include <assert.h>
+
+#define LSIGNAL_ASSERT(x) assert(x)
 #include "lsignal.h"
 
 #define MethodName __func__
@@ -651,6 +654,17 @@ void TestDeleteOwnerAndDisconnectAll()
 	sigA.disconnect_all();
 }
 
+void TestRecursiveSignalCall()
+{
+	lsignal::signal<void()> sig;
+
+	sig.connect([&sig]()
+	{
+		sig();
+	}, nullptr);
+
+	sig();
+}
 
 int main(int argc, char *argv[])
 {
@@ -682,6 +696,7 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestCallSignalAfterDeleteOwner);
 	ExecuteTest(TestCallSignalAfterDeleteOwner2);
 	ExecuteTest(TestDeleteOwnerAndDisconnectAll);
+	ExecuteTest(TestRecursiveSignalCall);
 	//std::cin.get();
 
 	return 0;

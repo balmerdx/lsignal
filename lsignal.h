@@ -34,6 +34,11 @@ Cloned to https://github.com/balmerdx/lsignal
 #include <mutex>
 #include <vector>
 
+#ifndef LSIGNAL_ASSERT
+//Define LSIGNAL_ASSERT before include lsignal.h
+#define LSIGNAL_ASSERT(x)
+#endif
+
 namespace lsignal
 {
 	template<int>
@@ -203,6 +208,7 @@ namespace lsignal
 		{
 			mutable std::mutex _mutex;
 			bool _locked = false;
+			bool _signal_called = false;
 
 			std::list<joint> _callbacks;
 
@@ -409,6 +415,8 @@ namespace lsignal
 			add_and_delete_deffered_internal(data);
 			if (data->_locked)
 				return R();
+			LSIGNAL_ASSERT(!data->_signal_called);
+			data->_signal_called = true;
 		}
 
 		std::shared_ptr<internal_data> data_store(_data);
@@ -430,6 +438,7 @@ namespace lsignal
 				}
 			}
 
+			data->_signal_called = false;
 			add_and_delete_deffered(data);
 			return;
 		} else
@@ -451,6 +460,7 @@ namespace lsignal
 				}
 			}
 
+			data->_signal_called = false;
 			add_and_delete_deffered(data);
 			return r;
 		}
@@ -465,6 +475,8 @@ namespace lsignal
 
 		std::lock_guard<std::mutex> locker(data->_mutex);
 		add_and_delete_deffered_internal(data);
+		LSIGNAL_ASSERT(!data->_signal_called);
+		data->_signal_called = true;
 
 		if (!data->_locked)
 		{
@@ -488,6 +500,7 @@ namespace lsignal
 			add_and_delete_deffered_internal(data);
 		}
 
+		data->_signal_called = false;
 		return agg(std::move(result));
 	}
 
