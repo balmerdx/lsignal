@@ -1,3 +1,4 @@
 *.o
 lsignal
+proj.win/x64
 
