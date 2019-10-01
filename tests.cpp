@@ -227,86 +227,6 @@ void SetSameOwnerToSeveralSignals_AllSignalsShouldBeNotifiedAboutOwnerDestructio
 	AssertHelper::VerifyValue(receiverTwoCalled, false, "Second receiver should not be called.");
 }
 
-void CreateSignalToSignalConnection_WhenFirstSignalIsDestroyed_SecondSignalShouldBeNotifed()
-{
-	TestRunner::StartTest(MethodName);
-
-	bool receiverOneCalled = false;
-	bool receiverTwoCalled = false;
-
-	std::function<void()> receiverOne = [&receiverOneCalled]()
-	{
-		receiverOneCalled = true;
-	};
-
-	std::function<void()> receiverTwo = [&receiverTwoCalled]()
-	{
-		receiverTwoCalled = true;
-	};
-
-	lsignal::signal<void()> sigTwo;
-
-	{
-		lsignal::signal<void()> sigOne;
-
-		sigOne.connect(receiverOne, nullptr);
-		sigTwo.connect(receiverTwo, nullptr);
-
-		sigOne.connect(&sigTwo);
-
-		sigOne();
-
-		AssertHelper::VerifyValue(receiverOneCalled, true, "First receiver should be called.");
-		AssertHelper::VerifyValue(receiverTwoCalled, true, "Second receiver should be called.");
-	}
-
-	sigTwo();
-
-	AssertHelper::VerifyValue(receiverTwoCalled, true, "Second receiver should be called.");
-}
-
-void CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShouldBeNotifed()
-{
-	TestRunner::StartTest(MethodName);
-
-	bool receiverOneCalled = false;
-	bool receiverTwoCalled = false;
-
-	std::function<void()> receiverOne = [&receiverOneCalled]()
-	{
-		receiverOneCalled = true;
-	};
-
-	std::function<void()> receiverTwo = [&receiverTwoCalled]()
-	{
-		receiverTwoCalled = true;
-	};
-
-	lsignal::signal<void()> sigOne;
-
-	{
-		lsignal::signal<void()> sigTwo;
-
-		sigOne.connect(receiverOne, nullptr);
-		sigTwo.connect(receiverTwo, nullptr);
-
-		sigOne.connect(&sigTwo);
-
-		sigOne();
-
-		AssertHelper::VerifyValue(receiverOneCalled, true, "First receiver should be called.");
-		AssertHelper::VerifyValue(receiverTwoCalled, true, "Second receiver should be called.");
-	}
-
-	receiverOneCalled = false;
-	receiverTwoCalled = false;
-
-	sigOne();
-
-	AssertHelper::VerifyValue(receiverOneCalled, true, "First receiver should be called.");
-	AssertHelper::VerifyValue(receiverTwoCalled, false, "Second receiver should not be called.");
-}
-
 //Test class signal/slot
 
 static int receiveSigACount;
@@ -702,8 +622,6 @@ int main(int argc, char *argv[])
 	ExecuteTest(CallSignalWithMultipleConnections_SignalShouldBeCalled);
 	ExecuteTest(CallSignalWithoutConnections_SignalShouldBeCalled);
 	ExecuteTest(SetSameOwnerToSeveralSignals_AllSignalsShouldBeNotifiedAboutOwnerDestruction);
-	ExecuteTest(CreateSignalToSignalConnection_WhenFirstSignalIsDestroyed_SecondSignalShouldBeNotifed);
-	ExecuteTest(CreateSignalToSignalConnection_WhenSecondSignalIsDestryoed_FirstSignalShouldBeNotifed);
 
 	ExecuteTest(TestSignalInClass);
 	ExecuteTest(TestSignalDestroyListener);

@@ -1,5 +1,6 @@
-# balmerdx - multiple bugfix original library
-	see new test for fixed errors 
+# balmerdx - multiple bugfix and remove untested
+	- remove untested functionality
+	- fix delete self/recursive call and other connect/disconnect management 
 
 # lsignal: C++ signal/slot system.
 
