@@ -5,7 +5,6 @@
 #include <typeinfo>
 #include <assert.h>
 
-#define LSIGNAL_ASSERT(x) assert(x)
 #include "lsignal.h"
 
 #define MethodName __func__
@@ -574,18 +573,6 @@ void TestDeleteOwnerAndDisconnectAll()
 	sigA.disconnect_all();
 }
 
-void TestRecursiveSignalCall()
-{
-	lsignal::signal<void()> sig;
-
-	sig.connect([&sig]()
-	{
-		sig();
-	}, nullptr);
-
-	sig();
-}
-
 void TestDisconnectAllInSignal()
 {
 	TestRunner::StartTest(MethodName);
@@ -607,6 +594,79 @@ void TestDisconnectAllInSignal()
 
 	delete pa;
 	delete pb;
+}
+
+void TestRecursiveSignalCall()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+
+	int recursive_count = 5;
+
+	sig.connect([&sig, &recursive_count]()
+	{
+		recursive_count--;
+		if(recursive_count)
+			sig();
+	}, nullptr);
+
+	sig();
+}
+
+void TestRecursiveSignalAddDelete()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void(int)> sig;
+
+	TestB* tb = new TestB;
+	sig.connect(tb, &TestB::ReceiveSigA, tb);
+
+	receiveSigACount = 0;
+	sig(12);
+	AssertHelper::VerifyValue(1, receiveSigACount, "Verify 1");
+
+	const int recursive_count = 7;
+	int recursive_index = recursive_count;
+	sig.connect([&sig, &recursive_index,&tb](int a)
+	{
+		recursive_index--;
+		if (recursive_index)
+			sig(a);
+		else
+		{
+			delete tb;
+			tb = nullptr;
+		}
+	}, nullptr);
+
+	receiveSigACount = 0;
+	sig(23);
+	AssertHelper::VerifyValue(recursive_count, receiveSigACount, "Verify recursive");
+
+	sig.disconnect_all();
+
+	const int recursive_add = 3;
+	recursive_index = recursive_count;
+	sig.connect([&sig, &recursive_index, &tb, recursive_add](int a)
+	{
+		recursive_index--;
+		
+		if(recursive_index==recursive_add)
+		{
+			tb = new TestB;
+			sig.connect(tb, &TestB::ReceiveSigA, tb);
+		}
+
+		if (recursive_index)
+			sig(a);
+	}, nullptr);
+
+	receiveSigACount = 0;
+	sig(33);
+
+	AssertHelper::VerifyValue(recursive_add, receiveSigACount, "Verify recursive");
 }
 
 
@@ -638,8 +698,10 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestCallSignalAfterDeleteOwner);
 	ExecuteTest(TestCallSignalAfterDeleteOwner2);
 	ExecuteTest(TestDeleteOwnerAndDisconnectAll);
-	//ExecuteTest(TestRecursiveSignalCall); //shuld be assert in function
 	ExecuteTest(TestDisconnectAllInSignal);
+
+	ExecuteTest(TestRecursiveSignalCall);
+	ExecuteTest(TestRecursiveSignalAddDelete);
 	//std::cin.get();
 
 	return 0;
