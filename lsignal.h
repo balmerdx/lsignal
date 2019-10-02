@@ -364,7 +364,8 @@ namespace lsignal
 
 				if (!jnt.connection->locked && !jnt.connection->deleted)
 				{
-					jnt.callback(std::forward<Args>(args)...);
+					if(jnt.callback)
+						jnt.callback(std::forward<Args>(args)...);
 				}
 
 				if (iter == clast)
@@ -379,22 +380,14 @@ namespace lsignal
 			return;
 		} else
 		{
-			R r;
+			R r{};
 			if (!list_empty)
 			for (auto iter = cfirst; ; ++iter)
 			{
 				const joint& jnt = *iter;
 
 				if (!jnt.connection->locked && !jnt.connection->deleted)
-				{
-					if (std::next(iter, 1) == data->_callbacks.cend())
-					{
-						r = jnt.callback(std::forward<Args>(args)...);
-						break;
-					}
-
-					jnt.callback(std::forward<Args>(args)...);
-				}
+					r = jnt.callback(std::forward<Args>(args)...);
 
 				if (iter == clast)
 					break;

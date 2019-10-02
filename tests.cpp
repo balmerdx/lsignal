@@ -669,6 +669,21 @@ void TestRecursiveSignalAddDelete()
 	AssertHelper::VerifyValue(recursive_add, receiveSigACount, "Verify recursive");
 }
 
+void TestConnectEmptySignal()
+{
+	TestRunner::StartTest(MethodName);
+
+	std::function<void()> empty_fn_void;
+	lsignal::signal<void()> sig_void;
+	sig_void.connect(empty_fn_void, nullptr);
+	sig_void();
+
+	std::function<int()> empty_fn_int;
+	lsignal::signal<int()> sig_int;
+	sig_int.connect(empty_fn_int, nullptr);
+	sig_int();
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -702,6 +717,8 @@ int main(int argc, char *argv[])
 
 	ExecuteTest(TestRecursiveSignalCall);
 	ExecuteTest(TestRecursiveSignalAddDelete);
+
+	ExecuteTest(TestConnectEmptySignal);
 	//std::cin.get();
 
 	return 0;
