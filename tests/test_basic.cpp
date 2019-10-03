@@ -601,6 +601,71 @@ void TestConnectEmptySignal()
 	sig_int();
 }
 
+void TestConnectionDisconnect()
+{
+	TestRunner::StartTest(MethodName);
+	int called = 0;
+	lsignal::signal<void()> sig_void;
+	lsignal::connection cn = sig_void.connect([&called]() { called++; }, nullptr);
+
+	sig_void();
+
+	AssertHelper::VerifyValue(1, called, "Called once");
+
+	called = 0;
+	cn.disconnect();
+	sig_void();
+
+	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
+}
+
+void TestConnectionDisconnectWithOwner()
+{
+	TestRunner::StartTest(MethodName);
+	int called = 0;
+	lsignal::signal<void()> sig_void;
+	lsignal::slot owner;
+	lsignal::connection cn = sig_void.connect([&called]() { called++; }, &owner);
+
+	sig_void();
+
+	AssertHelper::VerifyValue(1, called, "Called once");
+
+	called = 0;
+	cn.disconnect();
+	sig_void();
+	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
+
+	called = 0;
+	cn.disconnect();
+	sig_void();
+	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
+}
+
+void TestConnectionDisconnectWithOwnerAfterOwnerDelete()
+{
+	TestRunner::StartTest(MethodName);
+	int called = 0;
+	lsignal::signal<void()> sig_void;
+	lsignal::slot* owner = new lsignal::slot();
+	lsignal::connection cn = sig_void.connect([&called]() { called++; }, owner);
+
+	sig_void();
+
+	AssertHelper::VerifyValue(1, called, "Called once");
+
+	delete owner;
+
+	called = 0;
+	sig_void();
+	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
+
+	called = 0;
+	cn.disconnect();
+	sig_void();
+	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
+}
+
 void CallBasicTests()
 {
 	ExecuteTest(CreateSignal_SignalShouldBeUnlocked);
@@ -632,4 +697,8 @@ void CallBasicTests()
 	ExecuteTest(TestRecursiveSignalAddDelete);
 
 	ExecuteTest(TestConnectEmptySignal);
+
+	ExecuteTest(TestConnectionDisconnect);
+	ExecuteTest(TestConnectionDisconnectWithOwner);
+	ExecuteTest(TestConnectionDisconnectWithOwnerAfterOwnerDelete);
 }

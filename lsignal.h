@@ -81,11 +81,11 @@ namespace lsignal
 	{
 		bool locked = false;
 		bool deleted = false;
+		std::function<void(std::shared_ptr<connection_data>)> deleter;
 	};
 
 	struct connection_cleaner
 	{
-		std::function<void(std::shared_ptr<connection_data>)> deleter;
 		std::shared_ptr<connection_data> data;
 
 		connection_cleaner();
@@ -106,22 +106,23 @@ namespace lsignal
 		void set_lock(const bool lock);
 
 		void disconnect();
-
 	private:
 		std::shared_ptr<connection_data> _data;
-		std::vector<connection_cleaner> _cleaners;
-
 	};
 
 
 	// slot
 	class slot
-		: public connection
 	{
+		template<typename>
+		friend class signal;
 	public:
 		slot();
-		~slot() override;
+		virtual ~slot();
 
+		void disconnect();
+	private:
+		std::vector<connection_cleaner> _cleaners;
 	};
 
 	// signal
@@ -434,20 +435,19 @@ namespace lsignal
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const
 	{
-		if (owner != nullptr)
+		auto deleter = [this](std::shared_ptr<connection_data> connection)
 		{
-			auto deleter = [this](std::shared_ptr<connection_data> connection)
-			{
-				destroy_connection(connection);
-			};
+			destroy_connection(connection);
+		};
 
-			connection_cleaner cleaner;
+		connection->deleter = deleter;
 
-			cleaner.deleter = deleter;
-			cleaner.data = connection;
+		connection_cleaner cleaner;
+		cleaner.data = connection;
 
+		if (owner != nullptr)
 			owner->_cleaners.emplace_back(cleaner);
-		}
+
 	}
 
 	template<typename R, typename... Args>

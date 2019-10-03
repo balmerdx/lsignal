@@ -39,18 +39,14 @@ namespace lsignal
 
 	void connection::disconnect()
 	{
-		decltype(_cleaners) cleaners = _cleaners;
-
-		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
+		if (_data)
 		{
-			const connection_cleaner& cleaner = *iter;
-
-			cleaner.deleter(cleaner.data);
+			_data->deleter(_data);
+			_data.reset();
 		}
 	}
 
 	slot::slot()
-		: connection(std::shared_ptr<connection_data>())
 	{
 	}
 
@@ -59,4 +55,15 @@ namespace lsignal
 		disconnect();
 	}
 
+	void slot::disconnect()
+	{
+		decltype(_cleaners) cleaners = _cleaners;
+
+		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
+		{
+			const connection_cleaner& cleaner = *iter;
+
+			cleaner.data->deleter(cleaner.data);
+		}
+	}
 }//namespace lsignal
