@@ -32,11 +32,6 @@ int pow3(int x)
 	return x * x * x;
 }
 
-int sum_agg(const std::vector<int>& v)
-{
-	return std::accumulate(v.cbegin(), v.cend(), 0);
-}
-
 void bar()
 {
 	std::cout << "function: bar\n";
@@ -91,8 +86,8 @@ int main(int argc, char *argv[])
 
 	signal<void(int, int)> data;
 
-	data.connect(print_sum);
-	data.connect(print_mul);
+	data.connect(print_sum, nullptr);
+	data.connect(print_mul, nullptr);
 
 	data(3, 4);
 
@@ -101,20 +96,19 @@ int main(int argc, char *argv[])
 
 	signal<int(int)> worker;
 
-	worker.connect(pow2);
-	worker.connect(pow3);
+	worker.connect(pow2, nullptr);
+	worker.connect(pow3, nullptr);
 
 	std::cout << "last slot = " << worker(2) << "\n";
-	std::cout << "agg value = " << worker(2, sum_agg) << "\n";
 
 	// example 3
 	std::cout << "\nexample #3:\n";
 
 	signal<void()> news;
 
-	connection conn_one = news.connect([]() { std::cout << "news #1\n"; });
-	connection conn_two = news.connect([]() { std::cout << "news #2\n"; });
-	news.connect([]() { std::cout << "news #3\n"; });
+	connection conn_one = news.connect([]() { std::cout << "news #1\n"; }, nullptr);
+	connection conn_two = news.connect([]() { std::cout << "news #2\n"; }, nullptr);
+	news.connect([]() { std::cout << "news #3\n"; }, nullptr);
 
 	std::cout << "(all connections)\n";
 	news();
@@ -134,14 +128,14 @@ int main(int argc, char *argv[])
 
 	auto foo = []() { std::cout << "lambda: foo\n"; };
 
-	dummy.connect(foo);
-	dummy.connect(bar);
+	dummy.connect(foo, nullptr);
+	dummy.connect(bar, nullptr);
 
 	baz b;
 	qux q;
 
-	dummy.connect(b);
-	dummy.connect(&q, &qux::print);
+	dummy.connect(b, nullptr);
+	dummy.connect(&q, &qux::print, nullptr);
 
 	dummy();
 
@@ -162,22 +156,7 @@ int main(int argc, char *argv[])
 
 	printer();
 
-	// example 6
-	std::cout << "\nexample #6:\n";
-
-	signal<void(int)> first;
-	signal<void(int)> second;
-
-	first.connect(&second);
-
-	second.connect([](int x)
-	{
-		std::cout << "x = " << x << "\n";
-	});
-
-	first(10);
-
-        // example 7
+    // example 7
 	std::cout << "\nexample #7: slot\n";
 
 	signal<void()> sig7;
@@ -194,18 +173,19 @@ int main(int argc, char *argv[])
 	std::cout << "\nexample #8: disconnect_all\n";
 
 	signal<void()> sig8;
-	sig8.connect(bar);
-	sig8.connect(bar);
-	sig8.connect(bar);
+	sig8.connect(bar, nullptr);
+	sig8.connect(bar, nullptr);
+	sig8.connect(bar, nullptr);
 	sig8.disconnect_all();
 	sig8();
 
 
 	// check performance
 	lsignal::signal<void()> ls;
-	boost::signals2::signal_type<void(), boost::signals2::keywords::mutex_type<boost::signals2::dummy_mutex>>::type bs;
+	//boost::signals2::signal_type<void(), boost::signals2::keywords::mutex_type<boost::signals2::dummy_mutex>>::type bs;
+	boost::signals2::signal_type<void(), boost::signals2::keywords::mutex_type<boost::signals2::mutex>>::type bs;
 
-	ls.connect([](){});
+	ls.connect([](){}, nullptr);
 	bs.connect([](){});
 
 	auto lsignal_func = [&ls]() { ls(); };
