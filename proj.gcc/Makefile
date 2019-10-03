@@ -3,11 +3,15 @@
 #
 
 CXX?=g++
-#CXXFLAGS?=-std=c++11 -O3 -Wall
+#CXXFLAGS?=-std=c++17 -O3 -Wall
 CXXFLAGS?=-std=c++17 -O0 -Wall
 LDFLAGS?=
 EXECUTABLE=lsignal
-SOURCES=tests.cpp lsignal.cpp
+SOURCES=../tests/tests.cpp \
+	../tests/test_basic.cpp \
+	../tests/test_multithread.cpp \
+	../lsignal.cpp
+
 OBJECTS=$(SOURCES:.cpp=.o)
 
 .PHONY: all
@@ -20,5 +24,5 @@ $(EXECUTABLE): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -f *.o $(EXECUTABLE)
+	rm -f *.o ../*.o ../tests/*.o $(EXECUTABLE)
 

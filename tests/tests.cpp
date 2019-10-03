@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
 	(void)argc;
 	(void)argv;
 
-	//CallBasicTests();
+	CallBasicTests();
 	CallMultithreadTests();
 	//std::cin.get();
 
