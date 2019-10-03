@@ -386,7 +386,7 @@ namespace lsignal
 			{
 				const joint& jnt = *iter;
 
-				if (!jnt.connection->locked && !jnt.connection->deleted)
+				if (!jnt.connection->locked && !jnt.connection->deleted && jnt.callback)
 					r = jnt.callback(std::forward<Args>(args)...);
 
 				if (iter == clast)
@@ -507,8 +507,6 @@ namespace lsignal
 				break;
 			}
 		}
-
-
 	}
 
 	template<typename R, typename... Args>

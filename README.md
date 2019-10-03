@@ -33,22 +33,14 @@ signature of callback must be equal signature of corresponding signal:
 
 | Callback                            | Description                                                            |
 |-------------------------------------|------------------------------------------------------------------------|
-| `s.connect(foo);`                   | _foo_ is a common function                                             |
-| `s.connect(bar);`                   | _bar_ is a lambda function                                             |
-| `s.connect(baz);`                   | _baz_ is a class with operator()                                       |
-| `s.connect(&qx, &qux::func);`       | _qx_ is a instance of class qux                                        |
+| `s.connect(foo, owner);`            | _foo_ is a common function                                             |
+| `s.connect(bar, owner);`            | _bar_ is a lambda function                                             |
+| `s.connect(baz, owner);`            | _baz_ is a class with operator()                                       |
+| `s.connect(&qx, &qux::func, &qx);`  | _qx_ is a instance of class qux : public lsignal::slot                 |
 
 Result of this function is a instance of class `connection`.
 
 When signal is emitted return value will be the result of executing last connected callback.
-If you want to receive all results of callbacks you should pass aggregate function as last parameter:
-
-```cpp
-lsignal::signal<int(int,int)> s;
-...
-auto agg = [](const std::vector<int>& v) -> int { ... };
-s(2, 3, agg);
-```
 
 ##### connection
 

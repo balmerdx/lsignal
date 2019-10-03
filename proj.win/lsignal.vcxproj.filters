@@ -2,9 +2,25 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="..\lsignal.cpp" />
-    <ClCompile Include="..\tests.cpp" />
+    <ClCompile Include="..\tests\tests.cpp">
+      <Filter>tests</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tests\test_basic.cpp">
+      <Filter>tests</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tests\test_multithread.cpp">
+      <Filter>tests</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lsignal.h" />
+    <ClInclude Include="..\tests\tests.h">
+      <Filter>tests</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="tests">
+      <UniqueIdentifier>{9654ad87-913f-4aa3-a2cb-1d18c1deac9b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
 </Project>

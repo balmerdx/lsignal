@@ -1,87 +1,4 @@
-#include <cstdio>
-#include <iostream>
-#include <exception>
-#include <stack>
-#include <typeinfo>
-#include <assert.h>
-
-#include "lsignal.h"
-
-#define MethodName __func__
-
-template<typename... Args>
-std::string MakeString(const std::string& format, Args... args)
-{
-	size_t size = snprintf(nullptr, 0, format.c_str(), args...) + 1;
-	std::unique_ptr<char[]> buffer(new char[size]);
-	snprintf(buffer.get(), size, format.c_str(), args...);
-
-	return std::string(buffer.get(), buffer.get() + size - 1);
-}
-
-class TestRunner
-{
-public:
-	static void StartTest(const char *testName)
-	{
-		m_testName = testName;
-	}
-
-	static void EndTest()
-	{
-		m_testName = "";
-	}
-
-	static const char* CurrentTest()
-	{
-		return m_testName;
-	}
-
-private:
-	static const char* m_testName;
-
-};
-
-const char* TestRunner::m_testName;
-
-class AssertHelper
-{
-public:
-	static void VerifyValue(int expected, int actual, const char *message)
-	{
-		if (expected != actual)
-		{
-			throw std::logic_error(MakeString("\n\n  %s\n\n    Excepted: %d\n    Actual: %d", message, expected, actual));
-		}
-	}
-
-	static void VerifyValue(bool expected, bool actual, const char *message)
-	{
-		if (expected != actual)
-		{
-			throw std::logic_error(MakeString("\n\n  %s\n\n    Excepted: %s\n    Actual: %s", message, expected ? "true" : "false", actual ? "true" : "false"));
-		}
-	}
-
-};
-
-void ExecuteTest(std::function<void()> testMethod)
-{
-	try
-	{
-		testMethod();
-
-		std::cout << "(*) Test " << TestRunner::CurrentTest() << " passed.";
-	}
-	catch (const std::exception &ex)
-	{
-		std::cout << "(!) Test " << TestRunner::CurrentTest() << " failed: " << ex.what() << "\n";
-	}
-
-	TestRunner::EndTest();
-
-	std::cout << "\n";
-}
+#include "tests.h"
 
 struct SignalOwner : public lsignal::slot
 {
@@ -261,7 +178,7 @@ public:
 	{
 		std::cout << "ConnectionAddedInCallback" << std::endl;
 		connectionAddedInCallbackCalled = true;
-		receiveSigACount++;	
+		receiveSigACount++;
 	}
 
 	std::string dataB;
@@ -300,8 +217,8 @@ void TestSignalInClass()
 	ta.sigA(dataA);
 	tb.sigB(dataB);
 
-	AssertHelper::VerifyValue(true, tb.dataA==dataA, "Verify dataA");
-	AssertHelper::VerifyValue(true, ta.dataB==dataB, "Verify dataB");
+	AssertHelper::VerifyValue(true, tb.dataA == dataA, "Verify dataA");
+	AssertHelper::VerifyValue(true, ta.dataB == dataB, "Verify dataB");
 }
 
 void TestSignalDestroyListener()
@@ -310,7 +227,7 @@ void TestSignalDestroyListener()
 	std::vector<TestB*> listeners;
 	TestA ta;
 	const size_t count = 1000;
-	for(size_t i=0; i<count; i++)
+	for (size_t i = 0; i < count; i++)
 	{
 		TestB* pb = new TestB();
 		listeners.push_back(pb);
@@ -321,7 +238,7 @@ void TestSignalDestroyListener()
 	ta.sigA(23);
 	AssertHelper::VerifyValue(count, receiveSigACount, "Verify siga count1");
 
-	for(size_t i=0; i<count; i+=2)
+	for (size_t i = 0; i < count; i += 2)
 	{
 		delete listeners[i];
 		listeners[i] = nullptr;
@@ -336,7 +253,7 @@ void TestSignalDestroyListener()
 	ta.sigA(45);
 	AssertHelper::VerifyValue(0, receiveSigACount, "Verify disconnect_all");
 
-	for(TestB* pb : listeners)
+	for (TestB* pb : listeners)
 		delete pb;
 }
 
@@ -346,7 +263,7 @@ void TestDisconnectConnection()
 	std::vector<TestB*> listeners;
 	TestA ta;
 	const size_t count = 1000;
-	for(size_t i=0; i<count; i++)
+	for (size_t i = 0; i < count; i++)
 	{
 		TestB* pb = new TestB();
 		listeners.push_back(pb);
@@ -355,27 +272,27 @@ void TestDisconnectConnection()
 
 	receiveSigACount = 0;
 	ta.sigA(23);
-	AssertHelper::VerifyValue(true, receiveSigACount==count, "Verify siga count1");	
+	AssertHelper::VerifyValue(true, receiveSigACount == count, "Verify siga count1");
 
-	for(size_t i=0; i<count; i+=2)
+	for (size_t i = 0; i < count; i += 2)
 	{
 		ta.sigA.disconnect(listeners[i]->explicitConnectionA);
 	}
 
 	receiveSigACount = 0;
 	ta.sigA(34);
-	AssertHelper::VerifyValue(true, receiveSigACount==count/2, "Verify siga count/2");
+	AssertHelper::VerifyValue(true, receiveSigACount == count / 2, "Verify siga count/2");
 
 	receiveSigACount = 0;
-	for(size_t i=0; i<count; i++)
+	for (size_t i = 0; i < count; i++)
 	{
 		ta.sigA.disconnect(listeners[i]->explicitConnectionA);
 	}
 
 	ta.sigA(45);
-	AssertHelper::VerifyValue(true, receiveSigACount==0, "Verify disconnect_all");
+	AssertHelper::VerifyValue(true, receiveSigACount == 0, "Verify disconnect_all");
 
-	for(TestB* pb : listeners)
+	for (TestB* pb : listeners)
 		delete pb;
 }
 
@@ -387,26 +304,26 @@ void TestDestroySignal()
 	{
 		TestA ta;
 		const size_t count = 1000;
-		for(size_t i=0; i<count; i++)
+		for (size_t i = 0; i < count; i++)
 		{
 			TestB* pb = new TestB();
 			listeners.push_back(pb);
 			ta.sigA.connect(pb, &TestB::ReceiveSigA, pb);
 		}
 
-		for(size_t i=0; i<count; i+=2)
+		for (size_t i = 0; i < count; i += 2)
 		{
 			ta.sigA.disconnect(listeners[i]->explicitConnectionA);
 		}
 
-		for(size_t i=0; i<count; i+=3)
+		for (size_t i = 0; i < count; i += 3)
 		{
 			delete listeners[i];
 			listeners[i] = nullptr;
 		}
 	}
 
-	for(TestB* pb : listeners)
+	for (TestB* pb : listeners)
 		delete pb;
 }
 
@@ -478,17 +395,17 @@ void TestRemoveConnectionInCallback()
 	lsignal::signal<void()> sg;
 	bool callled = false;
 
-	lsignal::connection explicitConnection =  sg.connect([&callled]()
-		{
-			callled = true;
-		}, nullptr);
+	lsignal::connection explicitConnection = sg.connect([&callled]()
+	{
+		callled = true;
+	}, nullptr);
 	sg();
 	AssertHelper::VerifyValue(true, callled, "Connection not called");
 
 	sg.connect([&sg, &explicitConnection]()
-		{
-			sg.disconnect(explicitConnection);
-		}, nullptr);
+	{
+		sg.disconnect(explicitConnection);
+	}, nullptr);
 	sg();
 	callled = false;
 	sg();
@@ -520,7 +437,7 @@ void TestDestroyOwnerBeforeSignal()
 
 	lsignal::signal<void(int data)> sigA;
 	sigA.connect(pb, &TestB::ReceiveSigA, pb);
-	
+
 	sigA(37);
 
 	delete pb;
@@ -584,7 +501,7 @@ void TestDisconnectAllInSignal()
 	receiveSigACount = 0;
 	pa->sigA(37);
 	AssertHelper::VerifyValue(1, receiveSigACount, "Verify disconnect_all");
-	pa->sigA.connect([pa](int) {pa->sigA.disconnect_all(); },  pa);
+	pa->sigA.connect([pa](int) {pa->sigA.disconnect_all(); }, pa);
 
 	pa->sigA(37);
 
@@ -607,7 +524,7 @@ void TestRecursiveSignalCall()
 	sig.connect([&sig, &recursive_count]()
 	{
 		recursive_count--;
-		if(recursive_count)
+		if (recursive_count)
 			sig();
 	}, nullptr);
 
@@ -629,7 +546,7 @@ void TestRecursiveSignalAddDelete()
 
 	const int recursive_count = 7;
 	int recursive_index = recursive_count;
-	sig.connect([&sig, &recursive_index,&tb](int a)
+	sig.connect([&sig, &recursive_index, &tb](int a)
 	{
 		recursive_index--;
 		if (recursive_index)
@@ -652,8 +569,8 @@ void TestRecursiveSignalAddDelete()
 	sig.connect([&sig, &recursive_index, &tb, recursive_add](int a)
 	{
 		recursive_index--;
-		
-		if(recursive_index==recursive_add)
+
+		if (recursive_index == recursive_add)
 		{
 			tb = new TestB;
 			sig.connect(tb, &TestB::ReceiveSigA, tb);
@@ -684,12 +601,8 @@ void TestConnectEmptySignal()
 	sig_int();
 }
 
-
-int main(int argc, char *argv[])
+void CallBasicTests()
 {
-	(void)argc;
-	(void)argv;
-
 	ExecuteTest(CreateSignal_SignalShouldBeUnlocked);
 	ExecuteTest(LockSignal_SignalShouldBeLocked);
 	ExecuteTest(UnlockSignal_SignalShouldBeUnlocked);
@@ -719,7 +632,4 @@ int main(int argc, char *argv[])
 	ExecuteTest(TestRecursiveSignalAddDelete);
 
 	ExecuteTest(TestConnectEmptySignal);
-	//std::cin.get();
-
-	return 0;
 }
