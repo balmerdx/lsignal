@@ -176,7 +176,7 @@ namespace lsignal
 		{
 			mutable std::mutex _mutex;
 			bool _locked = false;
-			bool _signal_called = false;
+			int _signal_called_count = 0;
 
 			std::list<joint> _callbacks;
 		};
@@ -190,7 +190,6 @@ namespace lsignal
 
 		std::shared_ptr<connection_data> create_connection(callback_type&& fn, slot *owner);
 
-		void delete_deffered(internal_data* data) const;
 		void delete_deffered_internal(internal_data* data) const;
 
 		void add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const;
@@ -303,36 +302,26 @@ namespace lsignal
 		internal_data* data = _data.get();
 
 		bool list_empty = false;
-		bool signal_root = false;
 		typename std::list<joint>::const_iterator cfirst, clast;
 
 		{
 			std::lock_guard<std::mutex> locker(data->_mutex);
-			delete_deffered_internal(data);
-			if (data->_locked)
+			if (data->_signal_called_count == 0)
+				delete_deffered_internal(data);
+
+			if (data->_locked || data->_callbacks.empty())
 				return R();
 
-			//TODO _signal_called - bad logic in multithread
-			//potentially call delete_deffered in for(cfirst...clast)
-			if (!data->_signal_called)
-			{
-				signal_root = true;
-				data->_signal_called = true;
-			}
+			data->_signal_called_count++;
 
-			list_empty = data->_callbacks.empty();
-			if (!list_empty)
-			{
-				cfirst = data->_callbacks.cbegin();
-				clast = data->_callbacks.cend();
-				--clast;
-			}
+			cfirst = data->_callbacks.cbegin();
+			clast = data->_callbacks.cend();
+			--clast;
 		}
 
 		std::shared_ptr<internal_data> data_store(_data);
 		if constexpr (std::is_same<R, void>::value)
 		{
-			if(!list_empty)
 			for (auto iter = cfirst; ; ++iter)
 			{
 				const joint& jnt = *iter;
@@ -344,16 +333,14 @@ namespace lsignal
 					break;
 			}
 
-			if (signal_root)
 			{
-				data->_signal_called = false;
-				delete_deffered(data);
+				std::lock_guard<std::mutex> locker(data->_mutex);
+				data->_signal_called_count--;
 			}
 			return;
 		} else
 		{
 			R r{};
-			if (!list_empty)
 			for (auto iter = cfirst; ; ++iter)
 			{
 				const joint& jnt = *iter;
@@ -365,10 +352,9 @@ namespace lsignal
 					break;
 			}
 
-			if (signal_root)
 			{
-				data->_signal_called = false;
-				delete_deffered(data);
+				std::lock_guard<std::mutex> locker(data->_mutex);
+				data->_signal_called_count--;
 			}
 			return r;
 		}
@@ -424,13 +410,6 @@ namespace lsignal
 
 		data->_callbacks.push_back(std::move(jnt));
 		return connection;
-	}
-
-	template<typename R, typename... Args>
-	void signal<R(Args...)>::delete_deffered(internal_data* data) const
-	{
-		std::lock_guard<std::mutex> locker(data->_mutex);
-		delete_deffered_internal(data);
 	}
 
 	template<typename R, typename... Args>
