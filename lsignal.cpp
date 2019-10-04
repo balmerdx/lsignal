@@ -72,8 +72,9 @@ namespace lsignal
 		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
 		{
 			const connection_cleaner& cleaner = *iter;
-
-			cleaner.data->deleter(cleaner.data);
+			cleaner.data->deleted = true;
 		}
+
+		_cleaners.clear();
 	}
 }//namespace lsignal

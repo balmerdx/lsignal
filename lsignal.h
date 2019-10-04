@@ -81,7 +81,6 @@ namespace lsignal
 	{
 		bool locked = false;
 		bool deleted = false;
-		std::function<void(std::shared_ptr<connection_data>)> deleter;
 
 		connection_data();
 		~connection_data();
@@ -436,19 +435,11 @@ namespace lsignal
 	template<typename R, typename... Args>
 	void signal<R(Args...)>::add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const
 	{
-		auto deleter = [this](std::shared_ptr<connection_data> connection)
-		{
-			destroy_connection(connection);
-		};
-
-		connection->deleter = deleter;
-
 		connection_cleaner cleaner;
 		cleaner.data = connection;
 
 		if (owner != nullptr)
 			owner->_cleaners.emplace_back(cleaner);
-
 	}
 
 	template<typename R, typename... Args>
@@ -476,15 +467,6 @@ namespace lsignal
 		jnt.connection->deleted = true;
 		if (jnt.owner != nullptr)
 		{
-			for (auto it = jnt.owner->_cleaners.begin(); it != jnt.owner->_cleaners.end(); ++it)
-			{
-				if (it->data == jnt.connection)
-				{
-					jnt.owner->_cleaners.erase(it);
-					break;
-				}
-			}
-
 			jnt.owner = nullptr;
 		}
 	}
