@@ -144,7 +144,6 @@ namespace lsignal
 		signal(const signal& rhs);
 		signal& operator= (const signal& rhs);
 
-		//Copy signal cleared owner!!!!!!!!!!
 		signal(signal&& rhs) = default;
 		signal& operator= (signal&& rhs) = default;
 
@@ -171,29 +170,6 @@ namespace lsignal
 		{
 			callback_type callback;
 			std::shared_ptr<connection_data> connection;
-			slot *owner = nullptr;
-
-			joint()
-			{
-			}
-
-			~joint()
-			{
-			}
-
-			joint(joint&& rhs)
-			{
-				callback = std::move(rhs.callback);
-				connection = std::move(rhs.connection);
-				owner = rhs.owner; rhs.owner = nullptr;
-			}
-
-			void operator= (joint&& rhs)
-			{
-				callback = std::move(rhs.callback);
-				connection = std::move(rhs.connection);
-				owner = rhs.owner; rhs.owner = nullptr;
-			}
 		};
 
 		struct internal_data
@@ -213,13 +189,11 @@ namespace lsignal
 		void copy_callbacks(const std::list<joint>& callbacks);
 
 		std::shared_ptr<connection_data> create_connection(callback_type&& fn, slot *owner);
-		void destroy_connection(std::shared_ptr<connection_data> connection) const;
 
 		void delete_deffered(internal_data* data) const;
 		void delete_deffered_internal(internal_data* data) const;
 
 		void add_cleaner(slot *owner, std::shared_ptr<connection_data>& connection) const;
-		void clear_cleaner(joint& jnt) const;
 	};
 
 	template<typename R, typename... Args>
@@ -231,11 +205,6 @@ namespace lsignal
 	template<typename R, typename... Args>
 	signal<R(Args...)>::~signal()
 	{
-		internal_data* data = _data.get();
-		std::lock_guard<std::mutex> locker(data->_mutex);
-
-		for (joint& jnt : data->_callbacks)
-			clear_cleaner(jnt);
 	}
 
 	template<typename R, typename... Args>
@@ -246,10 +215,10 @@ namespace lsignal
 
 		for (auto& jnt : data->_callbacks)
 		{
-			clear_cleaner(jnt);
+			jnt.connection->deleted = true;
 		}
 
-		//data->_callbacks.clear(); dont clear callbacks, only lock in clear_cleaner
+		//data->_callbacks.clear(); dont clear callbacks, only mark deleted
 	}
 
 	template<typename R, typename... Args>
@@ -323,9 +292,9 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	void signal<R(Args...)>::disconnect(const connection& connection)
+	void signal<R(Args...)>::disconnect(const connection& conn)
 	{
-		destroy_connection(connection._data);
+		const_cast<connection*>(&conn)->disconnect();
 	}
 
 	template<typename R, typename... Args>
@@ -343,6 +312,8 @@ namespace lsignal
 			if (data->_locked)
 				return R();
 
+			//TODO _signal_called - bad logic in multithread
+			//potentially call delete_deffered in for(cfirst...clast)
 			if (!data->_signal_called)
 			{
 				signal_root = true;
@@ -419,16 +390,12 @@ namespace lsignal
 		{
 			const joint& jn = *iter;
 
-			if (jn.owner == nullptr)
-			{
-				joint jnt;
+			joint jnt;
 
-				jnt.callback = jn.callback;
-				jnt.connection = jn.connection;
-				jnt.owner = nullptr;
+			jnt.callback = jn.callback;
+			jnt.connection = jn.connection;
 
-				data->_callbacks.push_back(std::move(jnt));
-			}
+			data->_callbacks.push_back(std::move(jnt));
 		}
 	}
 
@@ -450,7 +417,6 @@ namespace lsignal
 		joint jnt;
 		jnt.callback = std::move(fn);
 		jnt.connection = connection;
-		jnt.owner = owner;
 
 		internal_data* data = _data.get();
 		std::lock_guard<std::mutex> locker(data->_mutex);
@@ -458,37 +424,6 @@ namespace lsignal
 
 		data->_callbacks.push_back(std::move(jnt));
 		return connection;
-	}
-
-	template<typename R, typename... Args>
-	void signal<R(Args...)>::clear_cleaner(joint& jnt) const
-	{
-		//dont call destroyed connection in operator()
-		jnt.connection->deleted = true;
-		if (jnt.owner != nullptr)
-		{
-			jnt.owner = nullptr;
-		}
-	}
-
-	template<typename R, typename... Args>
-	void signal<R(Args...)>::destroy_connection(std::shared_ptr<connection_data> connection) const
-	{
-		internal_data* data = _data.get();
-		std::lock_guard<std::mutex> locker(data->_mutex);
-		if (!connection)
-			return;
-		connection->deleted = true;
-
-		for (auto iter = data->_callbacks.begin(); iter != data->_callbacks.end(); ++iter)
-		{
-			joint& jnt = *iter;
-			if (jnt.connection == connection)
-			{
-				clear_cleaner(jnt);
-				break;
-			}
-		}
 	}
 
 	template<typename R, typename... Args>
