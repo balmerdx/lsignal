@@ -666,6 +666,22 @@ void TestConnectionDisconnectWithOwnerAfterOwnerDelete()
 	AssertHelper::VerifyValue(0, called, "Dont call after disconnect");
 }
 
+void TestConnectionDisconnectWithOwnerAfterSignalDelete()
+{
+	TestRunner::StartTest(MethodName);
+	int called = 0;
+	lsignal::signal<void()>* sig_void = new lsignal::signal<void()>();
+	lsignal::slot* owner = new lsignal::slot();
+	lsignal::connection cn = sig_void->connect([&called]() { called++; }, owner);
+
+	(*sig_void)();
+	AssertHelper::VerifyValue(1, called, "Called once");
+
+	delete sig_void;
+	cn.disconnect();
+	delete owner;
+}
+
 void CallBasicTests()
 {
 	ExecuteTest(CreateSignal_SignalShouldBeUnlocked);
@@ -701,4 +717,5 @@ void CallBasicTests()
 	ExecuteTest(TestConnectionDisconnect);
 	ExecuteTest(TestConnectionDisconnectWithOwner);
 	ExecuteTest(TestConnectionDisconnectWithOwnerAfterOwnerDelete);
+	ExecuteTest(TestConnectionDisconnectWithOwnerAfterSignalDelete);
 }

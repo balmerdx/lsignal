@@ -2,6 +2,15 @@
 
 namespace lsignal
 {
+	connection_data::connection_data()
+	{
+
+	}
+
+	connection_data::~connection_data()
+	{
+
+	}
 
 	connection_cleaner::connection_cleaner()
 	{
@@ -41,7 +50,8 @@ namespace lsignal
 	{
 		if (_data)
 		{
-			_data->deleter(_data);
+			//connection fully cleared after next signal call or signal delete
+			_data->deleted = true;
 			_data.reset();
 		}
 	}

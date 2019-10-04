@@ -82,6 +82,9 @@ namespace lsignal
 		bool locked = false;
 		bool deleted = false;
 		std::function<void(std::shared_ptr<connection_data>)> deleter;
+
+		connection_data();
+		~connection_data();
 	};
 
 	struct connection_cleaner
@@ -142,6 +145,7 @@ namespace lsignal
 		signal(const signal& rhs);
 		signal& operator= (const signal& rhs);
 
+		//Copy signal cleared owner!!!!!!!!!!
 		signal(signal&& rhs) = default;
 		signal& operator= (signal&& rhs) = default;
 
@@ -363,11 +367,8 @@ namespace lsignal
 			{
 				const joint& jnt = *iter;
 
-				if (!jnt.connection->locked && !jnt.connection->deleted)
-				{
-					if(jnt.callback)
-						jnt.callback(std::forward<Args>(args)...);
-				}
+				if (!jnt.connection->locked && !jnt.connection->deleted && jnt.callback)
+					jnt.callback(std::forward<Args>(args)...);
 
 				if (iter == clast)
 					break;
@@ -456,7 +457,6 @@ namespace lsignal
 		std::shared_ptr<connection_data> connection = std::make_shared<connection_data>();
 
 		joint jnt;
-
 		jnt.callback = std::move(fn);
 		jnt.connection = connection;
 		jnt.owner = owner;
