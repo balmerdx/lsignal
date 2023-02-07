@@ -115,8 +115,11 @@ namespace lsignal
 		connection connect(const callback_type& fn, slot *owner);
 		connection connect(callback_type&& fn, slot *owner);
 
-		template<typename T, typename U>
-		connection connect(T *p, const U& fn, slot *owner);
+		template<typename T, typename Tfn>
+		connection connect(T *p, R(Tfn::*fn)(Args...), slot *owner);
+
+		template<typename T, typename Tfn>
+		connection connect(T *p, R(Tfn::*fn)(Args...) const, slot *owner);
 
 		void disconnect(const connection& connection);
 
@@ -241,10 +244,18 @@ namespace lsignal
 	}
 
 	template<typename R, typename... Args>
-	template<typename T, typename U>
-	connection signal<R(Args...)>::connect(T *p, const U& fn, slot *owner)
+	template<typename T, typename Tfn>
+	connection signal<R(Args...)>::connect(T *p, R(Tfn::*fn)(Args...), slot *owner)
 	{
 		auto mem_fn = [fn, p](Args&&... args){ return (p->*fn)(std::forward<decltype(args)>(args)...); };
+		return create_connection(std::move(mem_fn), owner);
+	}
+
+	template<typename R, typename... Args>
+	template<typename T, typename Tfn>
+	connection signal<R(Args...)>::connect(T *p, R(Tfn::*fn)(Args...) const, slot *owner)
+	{
+		auto mem_fn = [fn, p](Args&&... args) { return (p->*fn)(std::forward<decltype(args)>(args)...); };
 		return create_connection(std::move(mem_fn), owner);
 	}
 
