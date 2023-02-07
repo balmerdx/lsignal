@@ -37,44 +37,6 @@ Cloned to https://github.com/balmerdx/lsignal
 
 namespace lsignal
 {
-	template<int>
-	struct placeholder_lsignal
-	{
-	};
-}
-
-namespace std
-{
-	// custom std::placeholders
-
-	template<int N>
-	struct is_placeholder<lsignal::placeholder_lsignal<N>>
-		: integral_constant<int, N+1>
-	{
-	};
-}
-
-namespace lsignal
-{
-	// std::integer_sequence for C++11
-
-	template<int... Ns>
-	struct int_sequence
-	{
-	};
-
-	template<int N, int... Ns>
-	struct make_int_sequence
-		: make_int_sequence<N-1, N-1, Ns...>
-	{
-	};
-
-	template<int... Ns>
-	struct make_int_sequence<0, Ns...>
-		: int_sequence<Ns...>
-	{
-	};
-
 	// connection
 
 	struct connection_data
@@ -183,9 +145,6 @@ namespace lsignal
 
 		std::shared_ptr<internal_data> _data;
 
-		template<typename T, typename U, int... Ns>
-		callback_type construct_mem_fn(const T& fn, U *p, int_sequence<Ns...>) const;
-
 		void copy_callbacks(const std::list<joint>& callbacks);
 
 		std::shared_ptr<connection_data> create_connection(callback_type&& fn, slot *owner);
@@ -285,8 +244,7 @@ namespace lsignal
 	template<typename T, typename U>
 	connection signal<R(Args...)>::connect(T *p, const U& fn, slot *owner)
 	{
-		auto mem_fn = std::move(construct_mem_fn(fn, p, make_int_sequence<sizeof...(Args)>{}));
-
+		auto mem_fn = [fn, p](Args&&... args){ return (p->*fn)(std::forward<decltype(args)>(args)...); };
 		return create_connection(std::move(mem_fn), owner);
 	}
 
@@ -358,13 +316,6 @@ namespace lsignal
 			}
 			return r;
 		}
-	}
-
-	template<typename R, typename... Args>
-	template<typename T, typename U, int... Ns>
-	typename signal<R(Args...)>::callback_type signal<R(Args...)>::construct_mem_fn(const T& fn, U *p, int_sequence<Ns...>) const
-	{
-		return std::bind(fn, p, placeholder_lsignal<Ns>{}...);
 	}
 
 	template<typename R, typename... Args>

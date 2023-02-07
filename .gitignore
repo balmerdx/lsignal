@@ -3,3 +3,6 @@
 lsignal
 proj.win/x64
 proj.win_main
+build
+\.vscode
+
