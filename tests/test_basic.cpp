@@ -162,6 +162,7 @@ public:
 
 	void ReceiveDeleteSelf(int data)
 	{
+		(void)data;
 		std::cout << "TestA::ReceiveDeleteSelf started" << std::endl;
 		delete this;
 		std::cout << "TestA::ReceiveDeleteSelf completed" << std::endl;
@@ -176,6 +177,7 @@ public:
 
 	void ConnectionAddedInCallback(int data)
 	{
+		(void)data;
 		std::cout << "ConnectionAddedInCallback" << std::endl;
 		connectionAddedInCallbackCalled = true;
 		receiveSigACount++;
@@ -566,7 +568,7 @@ void TestRecursiveSignalAddDelete()
 
 	const int recursive_add = 3;
 	recursive_index = recursive_count;
-	sig.connect([&sig, &recursive_index, &tb, recursive_add](int a)
+	sig.connect([&sig, &recursive_index, &tb](int a)
 	{
 		recursive_index--;
 

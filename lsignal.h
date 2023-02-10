@@ -270,7 +270,6 @@ namespace lsignal
 	{
 		internal_data* data = _data.get();
 
-		bool list_empty = false;
 		typename std::list<joint>::const_iterator cfirst, clast;
 
 		{
