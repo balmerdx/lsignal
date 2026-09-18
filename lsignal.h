@@ -1,4 +1,4 @@
-/*
+﻿/*
 
 The MIT License (MIT)
 
@@ -38,7 +38,6 @@ Cloned to https://github.com/balmerdx/lsignal
 namespace lsignal
 {
 	// connection
-
 	struct connection_data
 	{
 		bool locked = false;
@@ -88,6 +87,82 @@ namespace lsignal
 	private:
 		std::vector<connection_cleaner> _cleaners;
 	};
+
+	inline connection_data::connection_data()
+	{
+
+	}
+
+	inline connection_data::~connection_data()
+	{
+
+	}
+
+	inline connection_cleaner::connection_cleaner()
+	{
+
+	}
+
+	inline connection_cleaner::~connection_cleaner()
+	{
+
+	}
+
+	inline connection::connection()
+	{
+
+	}
+
+	inline connection::connection(std::shared_ptr<connection_data>&& data)
+		: _data(std::move(data))
+	{
+	}
+
+	inline connection::~connection()
+	{
+	}
+
+	inline bool connection::is_locked() const
+	{
+		return _data->locked;
+	}
+
+	inline void connection::set_lock(const bool lock)
+	{
+		_data->locked = lock;
+	}
+
+	inline void connection::disconnect()
+	{
+		if (_data)
+		{
+			//connection fully cleared after next signal call or signal delete
+			_data->deleted = true;
+			_data.reset();
+		}
+	}
+
+	inline slot::slot()
+	{
+	}
+
+	inline slot::~slot()
+	{
+		disconnect();
+	}
+
+	inline void slot::disconnect()
+	{
+		decltype(_cleaners) cleaners = _cleaners;
+
+		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
+		{
+			const connection_cleaner& cleaner = *iter;
+			cleaner.data->deleted = true;
+		}
+
+		_cleaners.clear();
+	}
 
 	// signal
 	template<typename>

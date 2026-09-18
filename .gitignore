@@ -1,8 +1,5 @@
-\.DS_Store
-*.o
 lsignal
-proj.win/x64
-proj.win_main
-build
+/build/
 \.vscode
+\.DS_Store
 

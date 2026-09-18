@@ -566,14 +566,18 @@ void TestRecursiveSignalAddDelete()
 
 	sig.disconnect_all();
 
+	std::vector<TestB*> delete_list;
+
 	const int recursive_add = 3;
 	recursive_index = recursive_count;
-	sig.connect([&sig, &recursive_index, &tb](int a)
+	sig.connect([&sig, &recursive_index, &tb, &delete_list](int a)
 	{
 		recursive_index--;
 
 		if (recursive_index == recursive_add)
 		{
+			if(tb)
+				delete_list.push_back(tb);
 			tb = new TestB;
 			sig.connect(tb, &TestB::ReceiveSigA, tb);
 		}
@@ -586,6 +590,10 @@ void TestRecursiveSignalAddDelete()
 	sig(33);
 
 	AssertHelper::VerifyValue(recursive_add, receiveSigACount, "Verify recursive");
+
+	for(auto* t : delete_list)
+		delete t;
+	delete tb;
 }
 
 void TestConnectEmptySignal()
