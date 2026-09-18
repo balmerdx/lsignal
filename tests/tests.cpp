@@ -1,6 +1,8 @@
 #include "tests.h"
 
 const char* TestRunner::m_testName;
+int TestRunner::m_passedCount = 0;
+int TestRunner::m_failedCount = 0;
 
 void TestRunner::StartTest(const char *testName)
 {
@@ -15,6 +17,23 @@ void TestRunner::EndTest()
 const char* TestRunner::CurrentTest()
 {
 	return m_testName;
+}
+
+void TestRunner::ReportPassed()
+{
+	m_passedCount++;
+}
+
+void TestRunner::ReportFailed()
+{
+	m_failedCount++;
+}
+
+int TestRunner::Summary()
+{
+	int total = m_passedCount + m_failedCount;
+	std::cout << "\npassed " << m_passedCount << "/" << total << "\n";
+	return m_failedCount == 0 ? 0 : 1;
 }
 
 
@@ -34,6 +53,16 @@ void AssertHelper::VerifyValue(bool expected, bool actual, const char *message)
 	}
 }
 
+void AssertHelper::VerifyTrue(bool condition, const char *message, const char *file, int line)
+{
+	if (!condition)
+	{
+		std::ostringstream oss;
+		oss << "\n\n  " << file << ":" << line << "  " << message;
+		throw std::logic_error(oss.str());
+	}
+}
+
 void ExecuteTest(std::function<void()> testMethod)
 {
 	try
@@ -41,10 +70,17 @@ void ExecuteTest(std::function<void()> testMethod)
 		testMethod();
 
 		std::cout << "(*) Test " << TestRunner::CurrentTest() << " passed.";
+		TestRunner::ReportPassed();
 	}
 	catch (const std::exception &ex)
 	{
 		std::cout << "(!) Test " << TestRunner::CurrentTest() << " failed: " << ex.what() << "\n";
+		TestRunner::ReportFailed();
+	}
+	catch (...)
+	{
+		std::cout << "(!) Test " << TestRunner::CurrentTest() << " failed: unknown exception\n";
+		TestRunner::ReportFailed();
 	}
 
 	TestRunner::EndTest();
@@ -60,8 +96,10 @@ int main(int argc, char *argv[])
 	(void)argv;
 
 	CallBasicTests();
+	CallApiTests();
+	CallLifetimeTests();
 	CallMultithreadTests();
 	//std::cin.get();
 
-	return 0;
+	return TestRunner::Summary();
 }

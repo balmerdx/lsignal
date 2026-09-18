@@ -1,13 +1,19 @@
-cmake_minimum_required(VERSION 3.0.0)
+cmake_minimum_required(VERSION 3.10)
 project(lsignal_test VERSION 0.1.0)
+
+find_package(Threads REQUIRED)
 
 add_executable(${CMAKE_PROJECT_NAME}
     tests/tests.cpp
 	tests/test_basic.cpp
+	tests/test_api.cpp
+	tests/test_lifetime.cpp
 	tests/test_multithread.cpp
     )
 
 set_property(TARGET ${CMAKE_PROJECT_NAME} PROPERTY CXX_STANDARD 20)
+
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
 set(SANITIZER "address" CACHE STRING "Sanitizer to build with: none, address, thread, memory")
 set_property(CACHE SANITIZER PROPERTY STRINGS none address thread memory)

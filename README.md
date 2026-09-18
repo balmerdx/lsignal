@@ -42,6 +42,13 @@ Result of this function is a instance of class `connection`.
 
 When signal is emitted return value will be the result of executing last connected callback.
 
+Arguments are passed to every connected callback as lvalues (copied, not moved), the same
+way `boost::signals2` does it - so a callback that happens to move out of its argument
+does not leave later callbacks in the same emission with a moved-from value. As a
+consequence, a signal whose signature takes a move-only argument by value
+(e.g. `lsignal::signal<void(std::unique_ptr<T>)>`) will fail to compile - this is
+inherent to multicasting the same argument to several callbacks, not specific to lsignal.
+
 ##### connection
 
 `connection` contains link between signal and callback. Available next operations:

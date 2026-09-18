@@ -126,12 +126,13 @@ namespace lsignal
 
 	inline bool connection::is_locked() const
 	{
-		return _data->locked;
+		return _data && _data->locked;
 	}
 
 	inline void connection::set_lock(const bool lock)
 	{
-		_data->locked = lock;
+		if (_data)
+			_data->locked = lock;
 	}
 
 	inline void connection::disconnect()
@@ -288,6 +289,9 @@ namespace lsignal
 	template<typename R, typename... Args>
 	signal<R(Args...)>& signal<R(Args...)>::operator= (const signal& rhs)
 	{
+		if (this == &rhs)
+			return *this;
+
 		internal_data* data = _data.get();
 		internal_data* rhs_data = rhs._data.get();
 
@@ -375,22 +379,36 @@ namespace lsignal
 		}
 
 		std::shared_ptr<internal_data> data_store(_data);
+
+		//Decrements _signal_called_count on scope exit, including when a
+		//callback throws - otherwise an exception would leave the count
+		//stuck above zero forever and delete_deffered_internal() would
+		//never run again (disconnected connections would pile up in
+		//_callbacks and empty() would never report true).
+		struct emit_guard
+		{
+			internal_data* d;
+			~emit_guard()
+			{
+				std::lock_guard<std::mutex> locker(d->_mutex);
+				d->_signal_called_count--;
+			}
+		} guard{data};
+
 		if constexpr (std::is_same<R, void>::value)
 		{
 			for (auto iter = cfirst; ; ++iter)
 			{
 				const joint& jnt = *iter;
 
+				//args are passed as lvalues to every callback (not forwarded/moved) so
+				//that a move-happy callback can't leave later callbacks in this same
+				//emission observing a moved-from argument.
 				if (!jnt.connection->locked && !jnt.connection->deleted && jnt.callback)
-					jnt.callback(std::forward<Args>(args)...);
+					jnt.callback(args...);
 
 				if (iter == clast)
 					break;
-			}
-
-			{
-				std::lock_guard<std::mutex> locker(data->_mutex);
-				data->_signal_called_count--;
 			}
 			return;
 		} else
@@ -401,15 +419,10 @@ namespace lsignal
 				const joint& jnt = *iter;
 
 				if (!jnt.connection->locked && !jnt.connection->deleted && jnt.callback)
-					r = jnt.callback(std::forward<Args>(args)...);
+					r = jnt.callback(args...);
 
 				if (iter == clast)
 					break;
-			}
-
-			{
-				std::lock_guard<std::mutex> locker(data->_mutex);
-				data->_signal_called_count--;
 			}
 			return r;
 		}

@@ -1,41 +1,6 @@
 #include "tests.h"
 
 
-void TestThreadExample()
-{
-	TestRunner::StartTest(MethodName);
-	std::atomic_bool thread_wait_starting(true);
-	std::atomic_bool thread_started(false);
-	std::atomic_bool thread_executing(true);
-
-	std::thread t1([&thread_wait_starting, &thread_started, &thread_executing]()
-	{
-		while (thread_wait_starting);
-		std::cout << "Thread sunc0\n";
-		thread_started = true;
-
-		int idx = 0;
-		while (thread_executing)
-		{
-			std::cout << "Thread idx=" << idx++ <<"\n";
-			//std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
-
-	});
-
-	std::cout << "pt0\n";
-	thread_wait_starting = false;
-	std::cout << "pt1\n";
-	while (!thread_started);
-	std::cout << "pt2\n";
-	//std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	thread_executing = false;
-
-	t1.join();
-
-	std::cout << "join\n";
-}
-
 void TestThreadAddDeleteCall()
 {
 	TestRunner::StartTest(MethodName);
@@ -367,6 +332,160 @@ void TestThreadEmpty()
 	std::cout << "saw_non_empty=" << saw_non_empty << "\n";
 }
 
+// Deterministic counterpart to TestThreadSetLock: after the locking thread
+// has joined (guaranteeing both flags are left unlocked - see its loop body),
+// a fresh emission must call the callback.
+void TestThreadSetLockDeterministic()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	lsignal::slot owner;
+	std::atomic<int> call_count(0);
+	lsignal::connection conn = sig.connect([&call_count]() { call_count++; }, &owner);
+
+	RunConcurrently(
+		[&](const std::atomic_bool& running)
+		{
+			while (running)
+			{
+				sig.set_lock(true);
+				conn.set_lock(true);
+				sig.set_lock(false);
+				conn.set_lock(false);
+			}
+		},
+		[&]()
+		{
+			for (int i = 0; i < 20000; i++)
+				sig();
+		});
+
+	int before = call_count.load();
+	sig();
+	VERIFY_EQ(before + 1, call_count.load(), "signal should call its callback once the locking thread has joined");
+}
+
+// 4 threads connect to the same signal concurrently; every connect() must
+// survive into a single emission afterwards - none may be lost to a race
+// in create_connection()/_callbacks.
+void TestThreadConcurrentConnect()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	lsignal::slot owner;
+	std::atomic<int> call_count(0);
+
+	const int thread_count = 4;
+	const int per_thread = 250;
+
+	std::vector<std::thread> threads;
+	for (int t = 0; t < thread_count; t++)
+	{
+		threads.emplace_back([&sig, &owner, &call_count]()
+		{
+			for (int i = 0; i < per_thread; i++)
+				sig.connect([&call_count]() { call_count++; }, &owner);
+		});
+	}
+	for (auto& th : threads)
+		th.join();
+
+	sig();
+	VERIFY_EQ(thread_count * per_thread, call_count.load(), "every connect() from every thread should be present in a single emission");
+}
+
+// 4 threads repeatedly emit the same signal concurrently; the single
+// connected callback must be invoked exactly once per emission, from any
+// thread, with no lost or duplicated calls.
+void TestThreadConcurrentEmit()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	lsignal::slot owner;
+	std::atomic<int> call_count(0);
+	sig.connect([&call_count]() { call_count++; }, &owner);
+
+	const int thread_count = 4;
+	const int iterations = 5000;
+
+	std::vector<std::thread> threads;
+	for (int t = 0; t < thread_count; t++)
+	{
+		threads.emplace_back([&sig]()
+		{
+			for (int i = 0; i < iterations; i++)
+				sig();
+		});
+	}
+	for (auto& th : threads)
+		th.join();
+
+	VERIFY_EQ(thread_count * iterations, call_count.load(), "every emit from every thread should reach the single connected callback exactly once");
+}
+
+// The non-void branch of operator() (R != void) is otherwise never exercised
+// under concurrency by the rest of this file - every other multithread test
+// uses signal<void(...)>.
+void TestThreadEmitReturnValue()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<int(int)> sig;
+	lsignal::slot owner;
+	sig.connect([](int v) { return v; }, &owner);
+	sig.connect([](int v) { return v * 2; }, &owner);
+
+	std::atomic<bool> mismatch(false);
+	const int thread_count = 4;
+	const int iterations = 2000;
+
+	std::vector<std::thread> threads;
+	for (int t = 0; t < thread_count; t++)
+	{
+		threads.emplace_back([&sig, &mismatch]()
+		{
+			for (int i = 0; i < iterations; i++)
+			{
+				int result = sig(i);
+				if (result != i * 2)
+					mismatch = true;
+			}
+		});
+	}
+	for (auto& th : threads)
+		th.join();
+
+	VERIFY_TRUE(!mismatch.load(), "concurrent emissions of a non-void signal should each return the result of the last connected callback");
+}
+
+// A slot is destroyed on one thread while another thread keeps emitting the
+// signal it was connected to. This only checks memory-safety (ASan/TSan) -
+// whether this particular callback still fires for this particular emission
+// is an intentional race, not asserted; the callback itself only touches an
+// atomic counter, never the slot object being destroyed.
+void TestThreadSlotDestroyDuringEmit()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	std::atomic<int> call_count(0);
+
+	for (int i = 0; i < 2000; i++)
+	{
+		lsignal::slot* owner = new lsignal::slot();
+		sig.connect([&call_count]() { call_count++; }, owner);
+
+		std::thread destroyer([owner]() { delete owner; });
+		sig();
+		destroyer.join();
+	}
+
+	std::cout << "call_count=" << call_count << "\n";
+}
+
 void CallMultithreadTests()
 {
 	ExecuteTest(TestThreadAddDeleteCall);
@@ -377,4 +496,10 @@ void CallMultithreadTests()
 	ExecuteTest(TestThreadSharedSlot);
 	ExecuteTest(TestThreadRecursiveCall);
 	ExecuteTest(TestThreadEmpty);
+
+	ExecuteTest(TestThreadSetLockDeterministic);
+	ExecuteTest(TestThreadConcurrentConnect);
+	ExecuteTest(TestThreadConcurrentEmit);
+	ExecuteTest(TestThreadEmitReturnValue);
+	ExecuteTest(TestThreadSlotDestroyDuringEmit);
 }
