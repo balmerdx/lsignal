@@ -28,6 +28,7 @@ Cloned to https://github.com/balmerdx/lsignal
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <memory>
@@ -40,8 +41,8 @@ namespace lsignal
 	// connection
 	struct connection_data
 	{
-		bool locked = false;
-		bool deleted = false;
+		std::atomic<bool> locked{false};
+		std::atomic<bool> deleted{false};
 
 		connection_data();
 		~connection_data();
@@ -85,6 +86,7 @@ namespace lsignal
 
 		void disconnect();
 	private:
+		mutable std::mutex _mutex;
 		std::vector<connection_cleaner> _cleaners;
 	};
 
@@ -153,15 +155,18 @@ namespace lsignal
 
 	inline void slot::disconnect()
 	{
-		decltype(_cleaners) cleaners = _cleaners;
+		decltype(_cleaners) cleaners;
+		{
+			std::lock_guard<std::mutex> locker(_mutex);
+			cleaners = _cleaners;
+			_cleaners.clear();
+		}
 
 		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
 		{
 			const connection_cleaner& cleaner = *iter;
 			cleaner.data->deleted = true;
 		}
-
-		_cleaners.clear();
 	}
 
 	// signal
@@ -215,7 +220,7 @@ namespace lsignal
 		struct internal_data
 		{
 			mutable std::mutex _mutex;
-			bool _locked = false;
+			std::atomic<bool> _locked{false};
 			int _signal_called_count = 0;
 
 			std::list<joint> _callbacks;
@@ -268,9 +273,14 @@ namespace lsignal
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
-		delete_deffered_internal(rhs_data);
+		//rhs signal may be in the middle of being emitted (iterating
+		//_callbacks outside the lock, see operator()); pruning deleted
+		//connections here would invalidate that iteration, so defer it
+		//just like operator() does.
+		if (rhs_data->_signal_called_count == 0)
+			delete_deffered_internal(rhs_data);
 
-		data->_locked = rhs_data->_locked;
+		data->_locked = rhs_data->_locked.load();
 
 		copy_callbacks(rhs_data->_callbacks);
 	}
@@ -285,9 +295,11 @@ namespace lsignal
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
-		delete_deffered_internal(rhs_data);
+		//see signal(const signal&) above for why this is deferred
+		if (rhs_data->_signal_called_count == 0)
+			delete_deffered_internal(rhs_data);
 
-		data->_locked = rhs_data->_locked;
+		data->_locked = rhs_data->_locked.load();
 
 		copy_callbacks(rhs_data->_callbacks);
 
@@ -428,7 +440,10 @@ namespace lsignal
 		cleaner.data = connection;
 
 		if (owner != nullptr)
+		{
+			std::lock_guard<std::mutex> locker(owner->_mutex);
 			owner->_cleaners.emplace_back(cleaner);
+		}
 	}
 
 	template<typename R, typename... Args>
@@ -452,7 +467,7 @@ namespace lsignal
 	void signal<R(Args...)>::delete_deffered_internal(internal_data* data) const
 	{
 		auto it_to_remove = std::remove_if(data->_callbacks.begin(), data->_callbacks.end(),
-			[](const joint& jnt) { return jnt.connection->deleted; }
+			[](const joint& jnt) -> bool { return jnt.connection->deleted; }
 			);
 
 		data->_callbacks.erase(it_to_remove, data->_callbacks.end());
