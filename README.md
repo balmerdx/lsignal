@@ -93,3 +93,30 @@ noise of timing a single call. Example results (GCC 11, `-O2`, x86-64 Linux):
 `lsignal` is roughly 3-6x faster than `boost::signals2` for emitting a signal.
 Exact numbers vary by compiler, flags and hardware — rerun `main.cpp` to measure on
 your own setup.
+
+### Running the tests
+
+The project ships a CMake-based test suite (`tests/`) built as the `lsignal_test`
+executable.
+
+```sh
+mkdir build && cd build
+cmake ..
+cmake --build .
+./lsignal_test
+```
+
+A successful run ends with a `passed N/N` summary and exit code 0.
+
+By default the tests are built with AddressSanitizer/UBSan enabled. This is
+controlled by the `SANITIZER` cache variable, which accepts `none`, `address`
+(default), `thread` or `memory`:
+
+```sh
+cmake .. -DSANITIZER=thread   # run under ThreadSanitizer instead
+cmake .. -DSANITIZER=none     # plain build, no sanitizer
+```
+
+`SANITIZER=memory` requires Clang (`-DCMAKE_CXX_COMPILER=clang++`), since
+MemorySanitizer isn't implemented by GCC.
+
