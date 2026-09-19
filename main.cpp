@@ -63,17 +63,25 @@ struct demo
 	}
 };
 
-std::chrono::duration<double> get_performance(const std::function<void()>& fn)
+// Runs fn() `iterations` times and returns the average wall time per call.
+// A single call is too short and too noisy to measure reliably (cache
+// effects, branch prediction, OS scheduling jitter can easily dominate the
+// signal), so this averages over many calls after a warm-up phase.
+template<typename Fn>
+std::chrono::duration<double> get_performance(Fn&& fn, std::size_t iterations = 1'000'000)
 {
-	std::chrono::time_point<std::chrono::steady_clock> start, end;
+	// Warm up caches/branch predictor before measuring.
+	for (std::size_t i = 0; i < iterations / 10; ++i)
+		fn();
 
-	start = std::chrono::steady_clock::now();
+	const auto start = std::chrono::steady_clock::now();
 
-	fn();
+	for (std::size_t i = 0; i < iterations; ++i)
+		fn();
 
-	end = std::chrono::steady_clock::now();
+	const auto end = std::chrono::steady_clock::now();
 
-	return end - start;
+	return (end - start) / static_cast<double>(iterations);
 }
 
 int main(int argc, char *argv[])
@@ -181,31 +189,44 @@ int main(int argc, char *argv[])
 
 
 	// check performance
-	lsignal::signal<void()> ls;
-	//boost::signals2::signal_type<void(), boost::signals2::keywords::mutex_type<boost::signals2::dummy_mutex>>::type bs;
-	boost::signals2::signal_type<void(), boost::signals2::keywords::mutex_type<boost::signals2::mutex>>::type bs;
+	//
+	// Both signal types use a real (non-dummy) mutex, since that is how
+	// lsignal always operates - it has no dummy-mutex mode. This keeps the
+	// comparison apples-to-apples instead of comparing a locked signal
+	// against an unlocked one.
+	using boost_signal = boost::signals2::signal_type<void(),
+		boost::signals2::keywords::mutex_type<boost::signals2::mutex>>::type;
 
-	ls.connect([](){}, nullptr);
-	bs.connect([](){});
+	// A side effect the optimizer can't remove, so the benchmark loop can't
+	// be folded away to nothing just because the slots "do nothing".
+	volatile int sink = 0;
+	auto make_slot = [&sink]() { return [&sink]() { sink = sink + 1; }; };
 
-	auto lsignal_func = [&ls]() { ls(); };
-	auto bsignal_func = [&bs]() { bs(); };
+	auto bench = [&](const char* label, std::size_t slot_count)
+	{
+		lsignal::signal<void()> ls;
+		boost_signal bs;
 
-	std::chrono::nanoseconds elapsed;
+		for (std::size_t i = 0; i < slot_count; ++i)
+		{
+			ls.connect(make_slot(), nullptr);
+			bs.connect(make_slot());
+		}
 
-	// lsignal performance
-	std::cout << "\nlsignal performance:\n";
+		auto lsignal_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			get_performance([&ls]() { ls(); }));
+		auto boost_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			get_performance([&bs]() { bs(); }));
 
-	elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(get_performance(lsignal_func));
+		std::cout << "\n" << label << " (" << slot_count << " slot" << (slot_count == 1 ? "" : "s") << "):\n";
+		std::cout << "  lsignal        : " << lsignal_ns.count() << " ns/call\n";
+		std::cout << "  boost::signals2: " << boost_ns.count() << " ns/call\n";
+	};
 
-	std::cout << elapsed.count() << " ns\n";
+	std::cout << "\nperformance comparison (average over many calls):\n";
 
-	// boost signal2 perfromance (with dummy mutex)
-	std::cout << "\nboost::signals2 performance:\n";
-
-	elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(get_performance(bsignal_func));
-
-	std::cout << elapsed.count() << " ns\n";
+	bench("emit", 1);
+	bench("emit", 10);
 
 	return 0;
 }
