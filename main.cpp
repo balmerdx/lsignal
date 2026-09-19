@@ -171,7 +171,7 @@ int main(int argc, char *argv[])
 	{
 		slot s;
 
-		// sig7.connect(bar, &s); // compile error
+		sig7.connect(bar, &s);
 		sig7.connect([](){ std::cout << "sig7\n"; }, &s);
 		sig7();
 	}
