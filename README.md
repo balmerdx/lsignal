@@ -1,6 +1,7 @@
 # balmerdx - multiple bugfix and remove untested
 	- remove untested functionality
 	- fix delete self/recursive call and other connect/disconnect management 
+	- safe multithread
 
 # lsignal: C++ signal/slot system.
 
