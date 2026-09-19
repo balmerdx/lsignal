@@ -1,5 +1,6 @@
 lsignal
 /build/
+/test_debug_information/
 \.vscode
 \.DS_Store
 

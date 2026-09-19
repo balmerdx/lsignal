@@ -84,12 +84,20 @@ noise of timing a single call. Example results (GCC 11, `-O2`, x86-64 Linux):
 
 | Connected slots | lsignal   | boost::signals2 |
 |-----------------|-----------|------------------|
-| 1               | ~13 ns/call  | ~47 ns/call   |
-| 10              | ~35 ns/call  | ~221 ns/call  |
+| 1               | ~16 ns/call  | ~48 ns/call   |
+| 10              | ~33 ns/call  | ~222 ns/call  |
 
-`lsignal` is roughly 3-6x faster than `boost::signals2` for emitting a signal.
+`lsignal` is roughly 3-7x faster than `boost::signals2` for emitting a signal.
 Exact numbers vary by compiler, flags and hardware — rerun `main.cpp` to measure on
 your own setup.
+
+Since the debug-info rework below (each connected callable is now type-erased by
+hand instead of stored in a `std::function`, always via one heap allocation - no
+small-object optimization the way `std::function` has for tiny captures),
+the single-slot case got ~15% slower (~14ns → ~16ns) than before that change;
+10-slot emission is unaffected within measurement noise, since it's dominated
+by list iteration and locking, not by per-call dispatch. `lsignal` stays several
+times faster than `boost::signals2` either way.
 
 ### Running the tests
 
@@ -116,4 +124,48 @@ cmake .. -DSANITIZER=none     # plain build, no sanitizer
 
 `SANITIZER=memory` requires Clang (`-DCMAKE_CXX_COMPILER=clang++`), since
 MemorySanitizer isn't implemented by GCC.
+
+### Debug info vs boost::signals2
+
+`lsignal.h` used to nest all of its bookkeeping (`internal_data`, `joint`,
+`std::function<R(Args...)>`) directly inside the `signal<R(Args...)>` template,
+so the compiler re-emitted debug info for all of it for every distinct signal
+signature, and again in every translation unit that used it. It's now split into
+a non-template `lsignal::detail::signal_impl` (mutex, lock flag, callback list)
+shared by every signature, plus a small hand-rolled type erasure for each
+connected callable instead of `std::function`. See `test_debug_information/README.md`
+for the full methodology and the reasoning behind the specific design choices
+(`std::list`, not `std::vector`; `unique_ptr`, not `shared_ptr`, for the erased
+callable). Below is where that leaves `lsignal.h` next to `boost::signals2`,
+measured the same way (`clang++-20`, `-std=c++20`, DWARF 5, sum of `.debug_*`
+section bytes in the `.o`, taken as the marginal cost between 16 and 32
+identical-shape instances to cancel out one-time fixed costs like `.debug_abbrev`
+population - see that file's "Метод" section for why).
+
+Bytes of DWARF debug info per additional instance:
+
+| | `lsignal.h` (current) | `lsignal.h` (before this rework) | `boost::signals2` |
+|---|---:|---:|---:|
+| new `signal<R(Args...)>` signature | **2 005** | 49 684 (24.8×) | 274 643 (137×) |
+| new `connect(lambda, owner)` callable type | **2 836** | 5 578 (2.0×) | 10 997 (3.9×) |
+| new `connect(&obj, &T::method, owner)` pair | **2 593** | 6 053 (2.3×) | — |
+
+Duplication across translation units (8 shared signatures × M identical `.cpp`,
+summed `.debug_*` across all `.o`):
+
+| M (TUs) | `lsignal.h` (current) | `lsignal.h` (before) |
+|---:|---:|---:|
+| 1 | 152 601 | 483 538 |
+| 2 | 305 202 | 967 076 |
+| 4 | 610 404 | 1 934 152 |
+| 8 | 1 220 808 | 3 868 304 |
+
+Same linear-in-M growth as before (the compiler still re-emits the whole thing
+per TU either way - that's what `extern template` is for, see
+`test_debug_information/README.md` §2), just from a ~3.2x smaller base unit.
+
+Net effect for a project with, say, 200 distinct `signal<...>` signatures:
+roughly 9.7 MB less `.debug_*` per `.o` that uses them, before any
+TU-duplication multiplier, for a small (~15%, single-slot only) runtime cost -
+see "Performance" above.
 

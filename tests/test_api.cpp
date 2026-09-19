@@ -287,7 +287,9 @@ void TestConnectRvalueCallback()
 	bool called = false;
 	std::function<void()> receiver = [&called]() { called = true; };
 
-	//Explicitly selects connect(callback_type&&, slot*).
+	//connect() is a template on the callable type, so this deduces F=std::function<void()>
+	//and moves the whole std::function in - it's itself invocable, so it's erased like
+	//any other callable.
 	sig.connect(std::move(receiver), nullptr);
 
 	sig();
