@@ -26,7 +26,8 @@ interchangeable at the API level:
   per translation unit.
 
 See "lsignal_with_cpp vs lsignal_header_only" at the end of this file for the
-full comparison.
+full comparison. Use lsignal_header_only in small projects. Use lsignal_with_cpp
+in large projects.
 
 ### Essential classes
 
@@ -239,6 +240,8 @@ on the 10-slot case. Weigh that trade for your own project rather than taking
 it as a strict win.
 
 ### lsignal_with_cpp vs lsignal_header_only
+lsignal_with_cpp designed for large project to minimize executable size and debug
+information size.
 
 Both are built and tested by the same CMake project (`lsignal_test` against
 `lsignal_with_cpp/`, `lsignal_test_header_only` against
