@@ -92,6 +92,32 @@ void TestCopySignalIndependentConnections()
 	VERIFY_EQ(1, called_copy, "copy's own connection should be called");
 }
 
+// Not the same thing TestCopySignalIndependentConnections checks (that test
+// only verifies a connection added *after* copying isn't visible on the
+// other side). This one checks that a callback connected *before* the copy -
+// which both signals now call - has independently-copied captured state, not
+// a shared closure object. A prototype that stored the connected callable in
+// a shared_ptr<void> instead of deep-copying it on signal copy passed every
+// other test but silently shared closures here; found only by a manual check
+// (test_debug_information/build/copy_independence_check.cpp), never by a
+// unit test, per test_debug_information/README.md.
+void TestCopySignalIndependentClosureState()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<int()> sg;
+	int state = 1;
+	sg.connect([state]() mutable { return state++; }, nullptr);
+
+	lsignal::signal<int()> sg2 = sg;
+
+	int r1 = sg();  //original's own closure copy: 1 -> returns 1, advances to 2
+	int r2 = sg2(); //copy's own closure copy should be independent, still starting at 1
+
+	VERIFY_EQ(1, r1, "original's closure should start from its own captured state");
+	VERIFY_EQ(1, r2, "copy's closure should have an independent copy of the captured state, not share it with the original");
+}
+
 void TestMoveSignal()
 {
 	TestRunner::StartTest(MethodName);
@@ -387,6 +413,7 @@ void CallLifetimeTests()
 	ExecuteTest(TestCopySignalDisconnectAllAffectsCopy);
 	ExecuteTest(TestCopySignalCopiesLockFlag);
 	ExecuteTest(TestCopySignalIndependentConnections);
+	ExecuteTest(TestCopySignalIndependentClosureState);
 	ExecuteTest(TestMoveSignal);
 	ExecuteTest(TestCopyEmptySignal);
 

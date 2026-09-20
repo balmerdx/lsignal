@@ -3,17 +3,13 @@ project(lsignal_test VERSION 0.1.0)
 
 find_package(Threads REQUIRED)
 
-add_executable(${CMAKE_PROJECT_NAME}
+set(TEST_SOURCES
     tests/tests.cpp
-	tests/test_basic.cpp
-	tests/test_api.cpp
-	tests/test_lifetime.cpp
-	tests/test_multithread.cpp
+    tests/test_basic.cpp
+    tests/test_api.cpp
+    tests/test_lifetime.cpp
+    tests/test_multithread.cpp
     )
-
-set_property(TARGET ${CMAKE_PROJECT_NAME} PROPERTY CXX_STANDARD 20)
-
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
 set(SANITIZER "address" CACHE STRING "Sanitizer to build with: none, address, thread, memory")
 set_property(CACHE SANITIZER PROPERTY STRINGS none address thread memory)
@@ -38,5 +34,25 @@ else()
     message(FATAL_ERROR "Unknown SANITIZER value: ${SANITIZER} (expected none, address, thread or memory)")
 endif()
 
-target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Wall -Wextra -g ${SANITIZE_ARG})
-target_link_options(${CMAKE_PROJECT_NAME} PRIVATE ${SANITIZE_ARG})
+# Shared setup for both test executables below - same test sources, same
+# sanitizer/warning flags, only the lsignal variant they're built against differs.
+function(lsignal_configure_test_target target_name)
+    set_property(TARGET ${target_name} PROPERTY CXX_STANDARD 20)
+    target_link_libraries(${target_name} PRIVATE Threads::Threads)
+    target_compile_options(${target_name} PRIVATE -Wall -Wextra -g ${SANITIZE_ARG})
+    target_link_options(${target_name} PRIVATE ${SANITIZE_ARG})
+endfunction()
+
+# lsignal_with_cpp: lsignal.h + lsignal.cpp (the default, actively developed
+# distribution form - see root README.md's "lsignal_with_cpp vs
+# lsignal_header_only" section).
+add_executable(lsignal_test ${TEST_SOURCES} lsignal_with_cpp/lsignal.cpp)
+target_include_directories(lsignal_test PRIVATE lsignal_with_cpp)
+target_compile_definitions(lsignal_test PRIVATE LSIGNAL_WITH_CPP)
+lsignal_configure_test_target(lsignal_test)
+
+# lsignal_header_only: the original single-file header, kept and tested
+# alongside lsignal_with_cpp rather than as an untested archival copy.
+add_executable(lsignal_test_header_only ${TEST_SOURCES})
+target_include_directories(lsignal_test_header_only PRIVATE lsignal_header_only)
+lsignal_configure_test_target(lsignal_test_header_only)

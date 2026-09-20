@@ -6,6 +6,9 @@
 
 #include <boost/signals2.hpp>
 
+// Not part of the CMake build - compile with -Ilsignal_with_cpp (and link
+// lsignal_with_cpp/lsignal.cpp), or -Ilsignal_header_only for the header-only
+// form instead (no extra .cpp needed then). See root README.md.
 #include "lsignal.h"
 
 using lsignal::connection;

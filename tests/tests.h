@@ -1,5 +1,8 @@
 #pragma once
-#include "../lsignal.h"
+// Resolved via each CMake target's own include directory - lsignal_test
+// points this at ../lsignal_with_cpp, lsignal_test_header_only at
+// ../lsignal_header_only.
+#include "lsignal.h"
 
 #include <cstdio>
 #include <iostream>
@@ -11,6 +14,12 @@
 #include <assert.h>
 #include <string>
 #include <sstream>
+// lsignal.h no longer pulls these in transitively (it now only includes what
+// its own public API needs) - the tests use them directly, so include them
+// explicitly instead of relying on the library header's internals.
+#include <functional>
+#include <memory>
+#include <vector>
 
 #define MethodName __func__
 

@@ -4,6 +4,24 @@
 // operator() return value, argument passing semantics, all four connect()
 // overloads and connection/signal locking.
 
+// Compile-time pins for special-member behavior that's easy to break
+// silently while refactoring lsignal.h's internals (see
+// test_debug_information/README.md):
+//  - lsignal::slot holds a mutex-guarded cleaner list; it must stay
+//    non-copyable/non-movable exactly like it was when that list was a
+//    plain std::mutex member (implicitly non-copyable) - a pimpl'd slot
+//    could silently become copyable (two slots sharing one impl -> double
+//    free) unless the copy/move are explicitly deleted.
+//  - lsignal::signal must stay both copyable and movable: it's documented
+//    and tested (TestSignalCopy, TestMoveSignal) API, not an accident of
+//    implementation.
+//  - lsignal::connection must stay copyable (copies share connection_data).
+static_assert(!std::is_copy_constructible<lsignal::slot>::value, "lsignal::slot must stay non-copyable");
+static_assert(!std::is_move_constructible<lsignal::slot>::value, "lsignal::slot must stay non-movable");
+static_assert(std::is_copy_constructible<lsignal::signal<void()>>::value, "lsignal::signal must stay copyable");
+static_assert(std::is_move_constructible<lsignal::signal<void()>>::value, "lsignal::signal must stay movable");
+static_assert(std::is_copy_constructible<lsignal::connection>::value, "lsignal::connection must stay copyable");
+
 //----------------------------------------------------------------------------
 // Helpers
 
@@ -410,6 +428,45 @@ void TestConnectionCopyShareState()
 	VERIFY_EQ(0, called, "disconnecting through the original should disconnect the shared connection");
 }
 
+// connection has explicit move ctor/assign only in the lsignal_with_cpp
+// variant (previously, and still in lsignal_header_only, a user-declared
+// virtual destructor suppressed the implicit move, so `connection c2 =
+// std::move(c1)` silently called the copy ctor instead and left c1 valid -
+// see bugs.md). Pins the new, intentional behaviour: moving empties the
+// source, and a moved-to connection still shares connection_data exactly
+// like a copy would. LSIGNAL_WITH_CPP is defined only for the
+// lsignal_test target (see CMakeLists.txt).
+#ifdef LSIGNAL_WITH_CPP
+void TestConnectionMoveSemantics()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	int called = 0;
+	lsignal::connection c1 = sig.connect([&called]() { called++; }, nullptr);
+
+	lsignal::connection c2 = std::move(c1);
+	VERIFY_TRUE(!c1.is_locked(), "moved-from connection should be empty (is_locked() on it is a safe no-op)");
+	c1.disconnect(); //also a safe no-op on the now-empty source
+	c1.set_lock(true); //also a safe no-op
+
+	sig();
+	VERIFY_EQ(1, called, "the connection moved into c2 should still be live and call back");
+
+	c2.set_lock(true);
+	sig();
+	VERIFY_EQ(1, called, "locking through the moved-to connection should prevent further calls");
+
+	lsignal::connection c3;
+	c3 = std::move(c2);
+	VERIFY_TRUE(!c2.is_locked(), "moved-from connection (via move-assign) should be empty");
+
+	c3.disconnect();
+	sig();
+	VERIFY_EQ(1, called, "disconnecting through the move-assigned-to connection should disconnect it");
+}
+#endif // LSIGNAL_WITH_CPP
+
 void TestDisconnectConnectionOfAnotherSignal()
 {
 	TestRunner::StartTest(MethodName);
@@ -453,5 +510,8 @@ void CallApiTests()
 	ExecuteTest(TestSignalLockDuringEmission);
 	ExecuteTest(TestDefaultConstructedConnection);
 	ExecuteTest(TestConnectionCopyShareState);
+#ifdef LSIGNAL_WITH_CPP
+	ExecuteTest(TestConnectionMoveSemantics);
+#endif
 	ExecuteTest(TestDisconnectConnectionOfAnotherSignal);
 }

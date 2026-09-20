@@ -486,6 +486,59 @@ void TestThreadSlotDestroyDuringEmit()
 	std::cout << "call_count=" << call_count << "\n";
 }
 
+// Stresses the exact invariant that keeps signal's callback list race-free
+// between an emitting thread and a connecting thread: the emitting thread's
+// cursor terminates on node IDENTITY with a snapshotted last node, and must
+// never dereference the `next` pointer of that last node - which is the one
+// field a concurrent connect() can be writing (see the comment on
+// detail::emit_scope::next() in lsignal_with_cpp/lsignal.cpp - the
+// equivalent loop in lsignal_header_only/lsignal.h's operator() has the same
+// invariant, just walking a std::list<erased_entry>::const_iterator instead
+// of a bare node*, so this test also runs against that variant, unguarded).
+// TestThreadAddDeleteCall
+// above connects 5-10 callbacks per round, so the racy node (the current
+// tail) is only a small fraction of what operator() walks; here there is
+// exactly one persistent callback, so it *is* the tail on every single
+// emission, maximising the chance a broken cursor gets caught by TSan.
+void TestThreadConnectRacesEmitSingleCallback()
+{
+	TestRunner::StartTest(MethodName);
+	std::atomic_bool thread_wait_starting(true);
+	std::atomic_bool thread_started(false);
+	std::atomic_bool thread_executing(true);
+
+	lsignal::signal<void()> sig;
+	lsignal::slot first_owner;
+	std::atomic<int> first_call_count(0);
+	sig.connect([&first_call_count]() { first_call_count++; }, &first_owner);
+
+	std::thread emitter([&thread_wait_starting, &thread_started, &thread_executing, &sig]()
+	{
+		while (thread_wait_starting);
+		thread_started = true;
+		while (thread_executing)
+			sig();
+	});
+
+	thread_wait_starting = false;
+	while (!thread_started);
+
+	std::atomic<int> connected_call_count(0);
+	for (int i = 0; i < 20000; i++)
+	{
+		lsignal::slot owner;
+		sig.connect([&connected_call_count]() { connected_call_count++; }, &owner);
+		//owner goes out of scope here and disconnects immediately - each
+		//iteration appends exactly one new tail node while the emitter is
+		//concurrently walking towards (or past) the current tail.
+	}
+
+	thread_executing = false;
+	emitter.join();
+
+	std::cout << "first_call_count=" << first_call_count << "\n";
+}
+
 void CallMultithreadTests()
 {
 	ExecuteTest(TestThreadAddDeleteCall);
@@ -502,4 +555,5 @@ void CallMultithreadTests()
 	ExecuteTest(TestThreadConcurrentEmit);
 	ExecuteTest(TestThreadEmitReturnValue);
 	ExecuteTest(TestThreadSlotDestroyDuringEmit);
+	ExecuteTest(TestThreadConnectRacesEmitSingleCallback);
 }
