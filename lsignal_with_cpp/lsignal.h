@@ -30,6 +30,7 @@ Cloned to https://github.com/balmerdx/lsignal
 
 #include "lsignal_defines.h"
 
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -43,9 +44,12 @@ Cloned to https://github.com/balmerdx/lsignal
 // visible to (or instantiated by) a consumer TU. That's what lets this header
 // need nothing beyond <type_traits>/<utility> (for std::decay_t/void_t/
 // declval/forward - see detail::has_bool_conversion and create_connection
-// below). See test_debug_information/README.md for the per-stage measurements
-// that motivated this and bugs.md for the ownership/refcounting invariants
-// lsignal.cpp relies on.
+// below) and <new> (declaration-only - placement new for the connected
+// callable, see create_connection - no inline bodies to instantiate, so it
+// doesn't move the per-TU DWARF floor measured in test_debug_information/
+// README.md §5). See that file for the per-stage measurements that motivated
+// this and bugs.md for the ownership/refcounting invariants lsignal.cpp
+// relies on.
 //
 // LSIGNAL_DLL (lsignal_defines.h) marks the classes below whose non-inline
 // methods or vtable are reached from template code that gets instantiated in
@@ -183,13 +187,28 @@ namespace lsignal
 			signal_base(signal_base&& rhs) noexcept;
 			signal_base& operator= (signal_base&& rhs) noexcept;
 
-			// Takes ownership of ctx unconditionally: if anything below
+			// Allocates one block: a node, plus inline storage right after it
+			// sized/aligned for the connected callable (ctx_size/ctx_align).
+			// Constructs the node itself in that block (this hands back a
+			// live object, not raw bytes) and writes the callable's storage
+			// address to *ctx_out - the caller is responsible for
+			// placement-new'ing the callable into it before calling
+			// add_callback below. Merges what used to be two separate
+			// allocations (the node, and `new DF(...)` in create_connection)
+			// into one - see test_debug_information/README.md.
+			static void* alloc_node(unsigned ctx_size, unsigned ctx_align, void** ctx_out);
+			// Frees a node whose callable was never constructed (its
+			// constructor threw) - never calls destroy. Only valid to call
+			// on a node that hasn't been handed to add_callback yet.
+			static void free_node(void* node) noexcept;
+
+			// Takes ownership of node unconditionally: if anything below
 			// throws, destroy(ctx) runs before the exception propagates.
 			// invoke may be null (an empty std::function connected directly,
 			// see has_bool_conversion above) - the emit loop then skips this
 			// entry forever, exactly like the old per-call `if (jnt.callback)`.
-			connection add_callback(void* ctx, void (*destroy)(void*),
-				void* (*clone)(const void*), invoke_fn invoke, slot* owner);
+			connection add_callback(void* node, void (*destroy)(void*),
+				void (*clone)(void*, const void*), invoke_fn invoke, slot* owner);
 
 			signal_impl* _data;
 		};
@@ -241,18 +260,46 @@ namespace lsignal
 			return (*static_cast<F*>(ctx))(std::forward<Args>(args)...);
 		}
 
+		//Destroys the callable in place - does not free the block it lives
+		//in (that's node's own storage now, freed by signal_impl).
 		template<typename F>
-		static void destroy_ctx(void* p) { delete static_cast<F*>(p); }
+		static void destroy_ctx(void* p) { static_cast<F*>(p)->~F(); }
 
+		//Placement-clones src into dst, which the caller has already sized/
+		//aligned to match (see signal_impl::copy_from) - no allocation here.
 		template<typename F>
-		static void* clone_ctx(const void* p) { return new F(*static_cast<const F*>(p)); }
+		static void clone_ctx(void* dst, const void* src) { ::new (dst) F(*static_cast<const F*>(src)); }
 
 		template<typename F>
 		connection create_connection(F&& fn, slot* owner)
 		{
 			using DF = std::decay_t<F>;
-			DF* raw = new DF(std::forward<F>(fn));
 
+			void* ctx;
+			void* node = alloc_node(sizeof(DF), alignof(DF), &ctx);
+
+			//try/catch only where DF's constructor can actually throw: for the
+			//common case (a lambda with trivially-copyable captures) this branch
+			//emits no landing pad at all, keeping create_connection<F>'s DWARF/
+			//.gcc_except_table cost the same as before this change.
+			DF* raw;
+			if constexpr (std::is_nothrow_constructible_v<DF, F&&>)
+			{
+				raw = ::new (ctx) DF(std::forward<F>(fn));
+			}
+			else
+			{
+				try { raw = ::new (ctx) DF(std::forward<F>(fn)); }
+				catch (...) { free_node(node); throw; }
+			}
+
+			//Checked on the fully constructed *raw (not the original fn),
+			//same as before this change: has_bool_conversion is only ever
+			//true for a handful of types (chiefly std::function) where
+			//operator bool() is documented noexcept, so checking post-
+			//construction (rather than adding a second, throwing-capable
+			//construction of DF just to check first) is the cheaper and
+			//simpler tradeoff here.
 			detail::invoke_fn invoke = reinterpret_cast<detail::invoke_fn>(&invoke_thunk<DF>);
 			if constexpr (detail::has_bool_conversion<DF>::value)
 			{
@@ -260,7 +307,7 @@ namespace lsignal
 					invoke = nullptr;
 			}
 
-			return this->add_callback(raw, &destroy_ctx<DF>, &clone_ctx<DF>, invoke, owner);
+			return this->add_callback(node, &destroy_ctx<DF>, &clone_ctx<DF>, invoke, owner);
 		}
 	};
 

@@ -8,7 +8,9 @@
 #include "lsignal.h"
 
 #include <atomic>
+#include <cstddef>
 #include <mutex>
+#include <new>
 #include <vector>
 
 namespace lsignal
@@ -146,11 +148,14 @@ namespace lsignal
 
 	namespace detail
 	{
-		// One callback slot, independent of any signal's R/Args. ctx owns
-		// the connected callable via a plain destroy function pointer rather
-		// than shared_ptr<void>/unique_ptr<void, fn>: this way the node
-		// itself, not a smart pointer type, is the only thing that needs to
-		// stay a single shared type across every signal signature - see
+		// One callback slot, independent of any signal's R/Args. ctx points
+		// at the connected callable's storage, which lives inline in the tail
+		// of this same node's allocation block (see allocate_node below) -
+		// one allocation covers both the node and the callable, not two.
+		// destroy is a plain function pointer rather than going through
+		// shared_ptr<void>/unique_ptr<void, fn>: this way the node itself,
+		// not a smart pointer type, is the only thing that needs to stay a
+		// single shared type across every signal signature - see
 		// test_debug_information/README.md for why that matters for debug
 		// info (shared_ptr's control block, or even unique_ptr's deleter
 		// slot, would otherwise still be a per-connected-callable-type cost).
@@ -158,7 +163,9 @@ namespace lsignal
 		// clone exists because copy_from (signal copy) deep-copies each
 		// connected callable's storage (independent closures after a signal
 		// copy, only the connection_data is shared) - it needs an explicit
-		// per-F clone function since ctx is an untyped void*.
+		// per-F clone function since ctx is an untyped void*. It placement-
+		// clones into a caller-provided destination rather than allocating,
+		// matching the no-separate-allocation-for-ctx scheme above.
 		//
 		// The list is a hand-rolled intrusive singly-linked list, not
 		// std::list<node> - the whole point of signal_impl being opaque is
@@ -173,15 +180,77 @@ namespace lsignal
 		class signal_impl
 		{
 		public:
+			//Fields every emission touches (via emit_scope::next(), see
+			//below) come first, so they share the block's first cache line
+			//with the head of the connected callable's own storage right
+			//after it; ctx_size/ctx_align are only read by copy_from/
+			//deallocate_node_block, not by the hot emit path.
 			struct node
 			{
 				node* next = nullptr;
-				void* ctx = nullptr;
-				void (*destroy)(void*) = nullptr;
-				void* (*clone)(const void*) = nullptr;
+				void* ctx = nullptr;              //points into this node's own tail, see allocate_node_block
 				invoke_fn invoke = nullptr;
 				connection_data* connection = nullptr;
+				void (*destroy)(void*) = nullptr;
+				void (*clone)(void*, const void*) = nullptr;
+				unsigned ctx_size = 0;
+				unsigned ctx_align = 0;
 			};
+			//Load-bearing for deallocate_node_block, which frees the block
+			//without calling ~node() - see there.
+			static_assert(std::is_trivially_destructible_v<node>);
+
+#ifdef __STDCPP_DEFAULT_NEW_ALIGNMENT__
+			static constexpr std::size_t default_new_alignment = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+#else
+			static constexpr std::size_t default_new_alignment = alignof(std::max_align_t);
+#endif
+
+			static std::size_t round_up(std::size_t size, std::size_t align)
+			{
+				return (size + align - 1) & ~(align - 1);
+			}
+
+			//Allocates one block covering both the node and inline storage
+			//for the connected callable (ctx_size bytes, aligned to
+			//ctx_align) right after it - merges what used to be two
+			//allocations (the node, and `new DF(...)` in create_connection)
+			//into one, see test_debug_information/README.md. Constructs the
+			//node in place (this returns a live object, not raw bytes) and
+			//writes the callable storage's address to *ctx_out; the callable
+			//itself is not constructed here - the caller placement-news it
+			//before the node is handed to add_callback.
+			static node* allocate_node_block(unsigned ctx_size, unsigned ctx_align, void** ctx_out)
+			{
+				const std::size_t block_align = alignof(node) > ctx_align ? alignof(node) : ctx_align;
+				const std::size_t ctx_offset = round_up(sizeof(node), ctx_align);
+				const std::size_t total = ctx_offset + ctx_size;
+
+				void* raw = (block_align > default_new_alignment)
+					? ::operator new(total, std::align_val_t(block_align))
+					: ::operator new(total);
+
+				node* n = ::new (raw) node();
+				n->ctx = static_cast<char*>(raw) + ctx_offset;
+				n->ctx_size = ctx_size;
+				n->ctx_align = ctx_align;
+				*ctx_out = n->ctx;
+				return n;
+			}
+
+			//Frees a block allocated by allocate_node_block, with the exact
+			//same operator-new/delete form (plain vs aligned) it was
+			//allocated with - never calls ~node() (see the static_assert
+			//above) and never calls destroy() on the callable: the caller is
+			//responsible for that first if the callable was constructed.
+			static void deallocate_node_block(node* n) noexcept
+			{
+				const std::size_t block_align = alignof(node) > n->ctx_align ? alignof(node) : n->ctx_align;
+				if (block_align > default_new_alignment)
+					::operator delete(n, std::align_val_t(block_align));
+				else
+					::operator delete(n);
+			}
 
 			mutable std::mutex mutex;
 			std::atomic<bool> locked{false};
@@ -221,10 +290,11 @@ namespace lsignal
 				while (n)
 				{
 					node* next_n = n->next;
-					if (n->ctx)
-						n->destroy(n->ctx);
+					//A node only ever reaches this list already fully
+					//constructed (add_callback), so ctx is always live here.
+					n->destroy(n->ctx);
 					release(n->connection);
-					delete n;
+					deallocate_node_block(n);
 					n = next_n;
 				}
 				head = tail = nullptr;
@@ -242,10 +312,9 @@ namespace lsignal
 					{
 						if (prev) prev->next = next_n; else head = next_n;
 						if (n == tail) tail = prev;
-						if (n->ctx)
-							n->destroy(n->ctx);
+						n->destroy(n->ctx);
 						release(n->connection);
-						delete n;
+						deallocate_node_block(n);
 					}
 					else
 					{
@@ -273,14 +342,15 @@ namespace lsignal
 			{
 				for (node* n = rhs.head; n; n = n->next)
 				{
-					auto* dst = new node();
+					void* dst_ctx;
+					node* dst = allocate_node_block(n->ctx_size, n->ctx_align, &dst_ctx);
 					try
 					{
-						dst->ctx = n->clone(n->ctx);
+						n->clone(dst_ctx, n->ctx);
 					}
 					catch (...)
 					{
-						delete dst; //ctx was never assigned - nothing to destroy
+						deallocate_node_block(dst); //ctx was never constructed - nothing to destroy
 						throw;
 					}
 					dst->destroy = n->destroy;
@@ -485,44 +555,48 @@ namespace lsignal
 			return _data->empty();
 		}
 
-		connection signal_base::add_callback(void* ctx, void (*destroy)(void*),
-			void* (*clone)(const void*), invoke_fn invoke, slot* owner)
+		void* signal_base::alloc_node(unsigned ctx_size, unsigned ctx_align, void** ctx_out)
 		{
-			using node = signal_impl::node;
+			return signal_impl::allocate_node_block(ctx_size, ctx_align, ctx_out);
+		}
 
-			node* raw;
-			try
-			{
-				raw = new node();
-			}
-			catch (...)
-			{
-				destroy(ctx);
-				throw;
-			}
+		void signal_base::free_node(void* node) noexcept
+		{
+			signal_impl::deallocate_node_block(static_cast<signal_impl::node*>(node));
+		}
 
-			//Cleans up the node - and, through it, ctx and (once assigned
-			//below) its connection_data reference - if anything past this
-			//point throws before ownership is fully handed off to the list.
+		connection signal_base::add_callback(void* node, void (*destroy)(void*),
+			void (*clone)(void*, const void*), invoke_fn invoke, slot* owner)
+		{
+			using node_t = signal_impl::node;
+			node_t* raw = static_cast<node_t*>(node);
+
+			//raw->ctx already points at the constructed callable (see
+			//alloc_node/create_connection) - destroy/clone/invoke must be
+			//assigned before node_guard below is installed, since the guard
+			//unconditionally calls destroy(ctx) on unwind.
+			raw->destroy = destroy;
+			raw->clone = clone;
+			raw->invoke = invoke;
+
+			//Cleans up the node - and, through it, the callable and (once
+			//assigned below) its connection_data reference - if anything
+			//past this point throws before ownership is fully handed off to
+			//the list.
 			struct node_guard
 			{
-				node* n;
+				node_t* n;
 				~node_guard()
 				{
 					if (n)
 					{
-						if (n->ctx)
-							n->destroy(n->ctx);
+						n->destroy(n->ctx);
 						release(n->connection);
-						delete n;
+						signal_impl::deallocate_node_block(n);
 					}
 				}
 			} guard{raw};
 
-			raw->ctx = ctx;
-			raw->destroy = destroy;
-			raw->clone = clone;
-			raw->invoke = invoke;
 			//connection_data's refcount starts at 1 (this node's own
 			//reference, see its declaration) - every other owner below
 			//explicitly addrefs.

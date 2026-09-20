@@ -1,5 +1,8 @@
 #include "tests.h"
 
+#include <array>
+#include <cstdint>
+
 // Tests for parts of the public API that CallBasicTests() never exercises:
 // operator() return value, argument passing semantics, all four connect()
 // overloads and connection/signal locking.
@@ -314,6 +317,191 @@ void TestConnectRvalueCallback()
 	VERIFY_TRUE(called, "callback moved into the signal should still be called");
 }
 
+//----------------------------------------------------------------------------
+// Storage of the connected callable itself: alignment, size, destruction,
+// exception safety of construction. None of these depend on lsignal_with_cpp
+// specifically merging the node and callable into one allocation - they pin
+// down observable behavior any storage scheme (a separate new, or a single
+// combined block) must preserve.
+
+template<std::size_t Align>
+struct alignas(Align) AlignedCallable
+{
+	bool* called;
+	void operator()() const
+	{
+		VERIFY_EQ(std::uintptr_t(0), reinterpret_cast<std::uintptr_t>(this) % Align,
+			"connected callable's storage must respect its own alignment");
+		*called = true;
+	}
+};
+
+template<std::size_t Align>
+void RunAlignedCallableCheck()
+{
+	lsignal::signal<void()> sig;
+	bool called = false;
+	sig.connect(AlignedCallable<Align>{&called}, nullptr);
+	sig();
+	VERIFY_TRUE(called, "aligned callable should be invoked");
+
+	//Also exercise the clone path (signal copy), not just the initial connect.
+	bool called_copy = false;
+	lsignal::signal<void()> sig2 = sig;
+	sig2.connect(AlignedCallable<Align>{&called_copy}, nullptr);
+	called = false;
+	sig2();
+	VERIFY_TRUE(called, "original aligned callback should still fire in the copy");
+	VERIFY_TRUE(called_copy, "second aligned callback added to the copy should fire too");
+}
+
+void TestConnectOverAlignedCallable()
+{
+	TestRunner::StartTest(MethodName);
+
+	RunAlignedCallableCheck<16>();  //== __STDCPP_DEFAULT_NEW_ALIGNMENT__ on most platforms
+	RunAlignedCallableCheck<32>();  //over-aligned: exercises the aligned-new path, if any
+	RunAlignedCallableCheck<64>();
+}
+
+void TestConnectLargeCaptureCallable()
+{
+	TestRunner::StartTest(MethodName);
+
+	constexpr int kSize = 1024;
+	std::array<unsigned char, kSize> pattern;
+	for (int i = 0; i < kSize; i++)
+		pattern[i] = static_cast<unsigned char>(i & 0xFF);
+
+	lsignal::signal<void()> sig;
+	std::array<unsigned char, kSize> seen{};
+	sig.connect([pattern, &seen]() { seen = pattern; }, nullptr);
+
+	//Connect-disconnect-connect around it to make sure a wrong ctx offset
+	//shows up as cross-talk with a neighboring node, not "got lucky".
+	lsignal::connection extra = sig.connect([]() {}, nullptr);
+	extra.disconnect();
+	sig.connect([]() {}, nullptr);
+
+	sig();
+	VERIFY_TRUE(seen == pattern, "large captured buffer should survive storage byte-for-byte");
+
+	//Exercise copy_from's cloned block too.
+	std::array<unsigned char, kSize> seen_copy{};
+	lsignal::signal<void()> sig2;
+	sig2.connect([pattern, &seen_copy]() { seen_copy = pattern; }, nullptr);
+	lsignal::signal<void()> sig3 = sig2;
+	sig3();
+	VERIFY_TRUE(seen_copy == pattern, "large captured buffer should survive a signal copy byte-for-byte");
+}
+
+struct DestructorCounter
+{
+	static int live_count;
+	int marker = 0;
+
+	DestructorCounter() { live_count++; }
+	DestructorCounter(const DestructorCounter&) { live_count++; }
+	DestructorCounter(DestructorCounter&&) noexcept { live_count++; }
+	~DestructorCounter() { live_count--; }
+};
+int DestructorCounter::live_count = 0;
+
+void TestConnectCallableWithNonTrivialDestructor()
+{
+	TestRunner::StartTest(MethodName);
+
+	DestructorCounter::live_count = 0;
+	{
+		lsignal::signal<void()> sig;
+		DestructorCounter counter;
+		lsignal::connection c1 = sig.connect([counter]() {}, nullptr);
+		//counter itself plus the copy captured by the lambda.
+		VERIFY_EQ(2, DestructorCounter::live_count, "captured copy should be alive alongside the local");
+
+		c1.disconnect();
+		sig(); //triggers deferred prune, which must run the captured copy's destructor
+		VERIFY_EQ(1, DestructorCounter::live_count, "disconnect + prune should destroy the captured copy exactly once");
+	}
+	VERIFY_EQ(0, DestructorCounter::live_count, "local counter should be destroyed at scope exit");
+
+	DestructorCounter::live_count = 0;
+	{
+		lsignal::signal<void()> sig;
+		DestructorCounter counter;
+		sig.connect([counter]() {}, nullptr);
+		VERIFY_EQ(2, DestructorCounter::live_count, "captured copy alive before signal destruction");
+	}
+	VERIFY_EQ(0, DestructorCounter::live_count, "destroying the signal should destroy every captured callable exactly once");
+
+	DestructorCounter::live_count = 0;
+	{
+		lsignal::signal<void()> sigA;
+		DestructorCounter counter;
+		sigA.connect([counter]() {}, nullptr);
+		{
+			lsignal::signal<void()> sigB = sigA; //clones the captured copy
+			VERIFY_EQ(3, DestructorCounter::live_count, "local + sigA's copy + sigB's cloned copy");
+		}
+		VERIFY_EQ(2, DestructorCounter::live_count, "destroying sigB should destroy only its own cloned copy");
+	}
+	VERIFY_EQ(0, DestructorCounter::live_count, "destroying sigA should destroy its copy too");
+
+	DestructorCounter::live_count = 0;
+	{
+		lsignal::signal<void()> sigA;
+		lsignal::signal<void()> sigB;
+		DestructorCounter counter;
+		sigA.connect([counter]() {}, nullptr);
+		sigB.connect([counter]() {}, nullptr);
+		VERIFY_EQ(3, DestructorCounter::live_count, "local + sigA's copy + sigB's own copy");
+
+		sigB = sigA; //sigB::operator= must destroy its own old callback before cloning sigA's
+		VERIFY_EQ(3, DestructorCounter::live_count, "sigB's old copy destroyed, sigA's copy cloned into sigB");
+	}
+	VERIFY_EQ(0, DestructorCounter::live_count, "destroying both signals should destroy both remaining copies");
+}
+
+struct ThrowingCopyCallable
+{
+	bool* should_throw;
+	ThrowingCopyCallable(bool* flag) : should_throw(flag) {}
+	ThrowingCopyCallable(const ThrowingCopyCallable& rhs) : should_throw(rhs.should_throw)
+	{
+		if (*should_throw)
+			throw std::runtime_error("copy ctor boom");
+	}
+	void operator()() const {}
+};
+
+void TestConnectThrowingCallableConstructor()
+{
+	TestRunner::StartTest(MethodName);
+
+	lsignal::signal<void()> sig;
+	bool should_throw = true;
+	ThrowingCopyCallable thrower(&should_throw);
+
+	bool threw = false;
+	try
+	{
+		sig.connect(thrower, nullptr); //copies thrower; the copy ctor throws
+	}
+	catch (const std::runtime_error&)
+	{
+		threw = true;
+	}
+	VERIFY_TRUE(threw, "a throwing copy constructor during connect() should propagate");
+	VERIFY_TRUE(sig.empty(), "a connect() that threw during construction must not leave a partial entry");
+
+	//Signal must remain fully usable afterwards.
+	should_throw = false;
+	int called = 0;
+	sig.connect([&called]() { called++; }, nullptr);
+	sig();
+	VERIFY_EQ(1, called, "signal should still work normally after a failed connect()");
+}
+
 void TestConnectOwnerDifferentFromReceiver()
 {
 	TestRunner::StartTest(MethodName);
@@ -503,6 +691,10 @@ void CallApiTests()
 	ExecuteTest(TestConnectBaseClassMemberFunction);
 	ExecuteTest(TestConnectFreeFunctionAndFunctor);
 	ExecuteTest(TestConnectRvalueCallback);
+	ExecuteTest(TestConnectOverAlignedCallable);
+	ExecuteTest(TestConnectLargeCaptureCallable);
+	ExecuteTest(TestConnectCallableWithNonTrivialDestructor);
+	ExecuteTest(TestConnectThrowingCallableConstructor);
 	ExecuteTest(TestConnectOwnerDifferentFromReceiver);
 
 	ExecuteTest(TestConnectionSetLock);

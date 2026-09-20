@@ -181,9 +181,18 @@ below in more detail:
    library into a header + `lsignal.cpp` (`lsignal_with_cpp/`, see
    "How to use" above) moved essentially all of that into one place compiled
    once per program instead of once per TU - the header now only needs
-   `<type_traits>`/`<utility>`. `lsignal_header_only/lsignal.h` keeps the
+   `<type_traits>`/`<utility>`/`<new>` (the last one declaration-only, for
+   placement new - see below). `lsignal_header_only/lsignal.h` keeps the
    original single-file form (rework 1 only) for projects where that fixed
    cost matters less than staying header-only.
+3. **One allocation per `connect()`, not two.** Orthogonal to the DWARF work
+   above: `lsignal_with_cpp`'s `connect()` used to make two separate heap
+   allocations (the connected callable, and the node that owns it) that
+   always live and die together - they're now one allocation, the callable
+   stored inline right after the node. See
+   `test_debug_information/README.md` §6 for the exact DWARF/allocation-count
+   tradeoff (a small, single-digit-percent DWARF cost for one fewer
+   `malloc`/`free` per `connect()`/`prune()`).
 
 Measured the same way as `boost::signals2` (`clang++-20`, `-std=c++20`,
 DWARF 5, sum of `.debug_*` section bytes in the `.o`, marginal cost between
@@ -194,9 +203,14 @@ Bytes of DWARF debug info per additional instance:
 
 | | `lsignal_with_cpp/lsignal.h` | original `lsignal.h` (before either rework) | `boost::signals2` |
 |---|---:|---:|---:|
-| new `signal<R(Args...)>` signature | **773** | 49 684 (64×) | 274 643 (355×) |
-| new `connect(lambda, owner)` callable type | **2 576** | 5 578 (2.2×) | 10 997 (4.3×) |
-| new `connect(&obj, &T::method, owner)` pair | **2 288** | 6 053 (2.6×) | — |
+| new `signal<R(Args...)>` signature | **783** | 49 684 (63×) | 274 643 (351×) |
+| new `connect(lambda, owner)` callable type | **2 650** | 5 578 (2.1×) | 10 997 (4.2×) |
+| new `connect(&obj, &T::method, owner)` pair | **2 340** | 6 053 (2.6×) | — |
+
+(A few percent higher than a previous measurement of this same header - see
+`test_debug_information/README.md` §6: merging `connect()`'s two allocations
+into one added a parameter to the per-callable `clone` function and two new
+non-template helpers to `lsignal.cpp`, at this small a cost.)
 
 Fixed cost of `#include "lsignal.h"` in a TU that uses none of the above
 (N=0 signatures) - this is what the per-TU split specifically targets:
@@ -204,12 +218,13 @@ Fixed cost of `#include "lsignal.h"` in a TU that uses none of the above
 | | `lsignal_with_cpp/lsignal.h` | `lsignal_header_only/lsignal.h` (rework 1 only) |
 |---:|---:|---:|
 | per TU | **682 bytes** | 73 581 bytes (108×) |
-| `lsignal.o` (once per program, not per TU) | 75 034 bytes | — (no separate .cpp) |
+| `lsignal.o` (once per program, not per TU) | 76 640 bytes | — (no separate .cpp) |
 
 682 bytes is close to the floor: an empty translation unit already costs 495
 bytes of `.debug_*` on its own (the compilation-unit DIE, `producer` string,
-etc.), and `<type_traits>`/`<utility>` with nothing from them actually used
-cost nothing measurable on top of that.
+etc.), and `<type_traits>`/`<utility>`/`<new>` with nothing from them actually
+used cost nothing measurable on top of that (confirmed after adding `<new>`
+for the single-allocation `connect()` above - the per-TU floor didn't move).
 
 Duplication across translation units (8 shared signatures × M identical `.cpp`,
 summed `.debug_*` across all `.o`; `lsignal.o` counted once per program, not
@@ -217,20 +232,21 @@ once per TU, in the "current" column):
 
 | M (TUs) | `lsignal_with_cpp/lsignal.h` | original `lsignal.h` (before either rework) |
 |---:|---:|---:|
-| 1 | 82 370 | 483 538 |
-| 2 | 89 706 | 967 076 |
-| 4 | 104 378 | 1 934 152 |
-| 8 | **133 722** | 3 868 304 |
+| 1 | 83 993 | 483 538 |
+| 2 | 91 346 | 967 076 |
+| 4 | 106 052 | 1 934 152 |
+| 8 | **135 464** | 3 868 304 |
 
-**9.1x** less at M=8, and - unlike the per-signature rework alone, where a
-single TU was still worse than before until the fixed `lsignal.o` cost
-amortized across enough TUs - already smaller at M=1, because that fixed cost
-dropped along with everything else. `extern template class lsignal::signal<Sig>;`
-used to cut the per-TU cost further (6.4x, see `test_debug_information/README.md`
-§2); with `signal_base` now absorbing nearly everything that used to be
-instantiated per signature, it barely moves the number anymore (133 722 vs
-122 898 at M=8) and is no longer worth the maintenance cost of the manual
-annotation.
+**~9x** less at M=8 than the intermediate, header-only-but-already-per-signature-shared
+state this rework started from (1 220 616, see `test_debug_information/README.md`
+§5 step 3), and - unlike the per-signature rework alone, where a single TU was
+still worse than before until the fixed `lsignal.o` cost amortized across enough
+TUs - already smaller at M=1, because that fixed cost dropped along with
+everything else. `extern template class lsignal::signal<Sig>;` used to cut the
+per-TU cost further (6.4x, see `test_debug_information/README.md` §2); with
+`signal_base` now absorbing nearly everything that used to be instantiated per
+signature, it barely moves the number anymore (135 464 vs 124 657 at M=8) and
+is no longer worth the maintenance cost of the manual annotation.
 
 Net effect for a project with, say, 200 distinct `signal<...>` signatures
 spread across a typical number of TUs: on the order of tens of MB less

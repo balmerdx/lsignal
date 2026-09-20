@@ -1,5 +1,7 @@
 #include "tests.h"
 
+#include <array>
+
 // Tests for signal copy/move semantics, the empty()/deferred-prune behaviour,
 // mutating a signal from inside its own callback, exception safety of
 // operator(), and lsignal::slot lifetime scenarios not covered by
@@ -116,6 +118,56 @@ void TestCopySignalIndependentClosureState()
 
 	VERIFY_EQ(1, r1, "original's closure should start from its own captured state");
 	VERIFY_EQ(1, r2, "copy's closure should have an independent copy of the captured state, not share it with the original");
+}
+
+// Same idea as TestCopySignalIndependentClosureState, but with several
+// callbacks of different capture sizes/alignments connected to the same
+// signal before the copy - a wrong storage offset for one callback would
+// most plausibly manifest as reading a *neighboring* callback's state, which
+// a single differently-sized callback can't catch.
+void TestCopySignalIndependentClosureStateMixedSizes()
+{
+	TestRunner::StartTest(MethodName);
+
+	struct alignas(32) Aligned32
+	{
+		int state;
+	};
+
+	lsignal::signal<void(std::vector<int>&)> sg;
+
+	int small_state = 100;
+	sg.connect([small_state](std::vector<int>& out) mutable { out.push_back(small_state++); }, nullptr);
+
+	std::array<long, 16> medium_state;
+	for (std::size_t i = 0; i < medium_state.size(); i++)
+		medium_state[i] = static_cast<long>(i);
+	sg.connect([medium_state](std::vector<int>& out) mutable
+	{
+		out.push_back(static_cast<int>(medium_state[0]));
+		medium_state[0]++;
+	}, nullptr);
+
+	Aligned32 aligned_state{7};
+	sg.connect([aligned_state](std::vector<int>& out) mutable
+	{
+		out.push_back(aligned_state.state);
+		aligned_state.state++;
+	}, nullptr);
+
+	lsignal::signal<void(std::vector<int>&)> sg2 = sg;
+
+	std::vector<int> r1, r2;
+	sg(r1);   //original's own copies: 100, 0, 7 -> each advances by one
+	sg2(r2);  //copy's own copies must be independent, starting from the same values
+
+	std::vector<int> expected{100, 0, 7};
+	VERIFY_TRUE(r1 == expected, "original callbacks should start from their own captured state");
+	VERIFY_TRUE(r2 == expected, "copy's callbacks should have independently-copied state, not share it with the original");
+
+	r1.clear();
+	sg(r1);
+	VERIFY_TRUE((r1 == std::vector<int>{101, 1, 8}), "original's state should have advanced independently of the copy");
 }
 
 void TestMoveSignal()
@@ -330,6 +382,88 @@ void TestExceptionFromCallbackRecursive()
 	VERIFY_TRUE(sig.empty(), "deferred pruning should still work after an exception unwound a nested emission");
 }
 
+namespace
+{
+	// Copy ctor throws for the kThrowAt-th *clone* made across all connected
+	// instances sharing one clone_position counter - used below to make one
+	// of several connected callbacks throw specifically during a signal
+	// copy's clone pass, not during the original connect(). clone_position
+	// is deliberately separate from the call counter (operator() below): the
+	// test also invokes the signal to verify it survived a failed copy, and
+	// that must not perturb which clone throws on a later copy attempt.
+	struct ThrowOnNthCopy
+	{
+		int* call_counter;
+		int* clone_position;
+		int throw_at;
+		bool primed = false; //the very first copy (into the signal's own node) must succeed
+
+		ThrowOnNthCopy(int* calls, int* clones, int at)
+			: call_counter(calls), clone_position(clones), throw_at(at) {}
+		ThrowOnNthCopy(const ThrowOnNthCopy& rhs)
+			: call_counter(rhs.call_counter), clone_position(rhs.clone_position), throw_at(rhs.throw_at)
+		{
+			if (rhs.primed)
+			{
+				int idx = (*clone_position)++;
+				if (idx == throw_at)
+					throw std::runtime_error("clone boom");
+			}
+			primed = true;
+		}
+		void operator()() const { (*call_counter)++; }
+	};
+}
+
+void TestSignalCopyWithThrowingCallableCopyCtor()
+{
+	TestRunner::StartTest(MethodName);
+
+	constexpr int kCount = 5;
+	constexpr int kThrowAt = 2;
+	int call_count = 0;
+	int clone_position = 0;
+
+	lsignal::signal<void()> sigA;
+	for (int i = 0; i < kCount; i++)
+		sigA.connect(ThrowOnNthCopy(&call_count, &clone_position, kThrowAt), nullptr);
+
+	bool threw = false;
+	try
+	{
+		lsignal::signal<void()> sigB = sigA;
+		(void)sigB;
+	}
+	catch (const std::runtime_error&)
+	{
+		threw = true;
+	}
+	VERIFY_TRUE(threw, "a throwing callable copy ctor during signal copy should propagate");
+
+	//sigA itself must be left intact and fully usable - copy_from only ever
+	//clones into the *new* signal's storage, never mutates rhs.
+	sigA();
+	VERIFY_EQ(kCount, call_count, "source signal should be untouched and still call every connected callback");
+
+	//operator= must also not crash or leak, though (unlike the copy ctor
+	//case) it's documented as leaving the destination in a valid-but-
+	//unspecified state on failure (signal_base::operator= has no rollback -
+	//see bugs.md).
+	lsignal::signal<void()> sigC;
+	sigC.connect([]() {}, nullptr);
+	clone_position = 0; //next copy attempt should throw at the same kThrowAt-th clone again
+	bool threw_assign = false;
+	try
+	{
+		sigC = sigA;
+	}
+	catch (const std::runtime_error&)
+	{
+		threw_assign = true;
+	}
+	VERIFY_TRUE(threw_assign, "a throwing callable copy ctor during signal operator= should propagate too");
+}
+
 //----------------------------------------------------------------------------
 // lsignal::slot
 
@@ -414,6 +548,7 @@ void CallLifetimeTests()
 	ExecuteTest(TestCopySignalCopiesLockFlag);
 	ExecuteTest(TestCopySignalIndependentConnections);
 	ExecuteTest(TestCopySignalIndependentClosureState);
+	ExecuteTest(TestCopySignalIndependentClosureStateMixedSizes);
 	ExecuteTest(TestMoveSignal);
 	ExecuteTest(TestCopyEmptySignal);
 
@@ -426,6 +561,7 @@ void CallLifetimeTests()
 	ExecuteTest(TestDestroySignalDuringEmissionWithRemainingCallbacks);
 	ExecuteTest(TestExceptionFromCallback);
 	ExecuteTest(TestExceptionFromCallbackRecursive);
+	ExecuteTest(TestSignalCopyWithThrowingCallableCopyCtor);
 
 	ExecuteTest(TestSlotDisconnectExplicit);
 	ExecuteTest(TestSlotDisconnectTwice);
