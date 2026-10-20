@@ -1,6 +1,10 @@
 #include "tests.h"
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
+#include <cstdlib>
+#include <mutex>
 
 // Tests for signal copy/move semantics, the empty()/deferred-prune behaviour,
 // mutating a signal from inside its own callback, exception safety of
@@ -251,6 +255,241 @@ void TestDeferredPruneAfterEmission()
 
 	sig();
 	VERIFY_TRUE(sig.empty(), "a single emission should prune all of them at once");
+}
+
+//----------------------------------------------------------------------------
+// WAR-26570, finding 2: destroying a closure must allow re-entering its signal.
+
+namespace
+{
+	class OperationDeadline
+	{
+		std::mutex mutex;
+		std::condition_variable finished;
+		bool done = false;
+		std::thread watchdog;
+
+	public:
+		explicit OperationDeadline(const char* testName)
+			: watchdog([this, testName]()
+			{
+				std::unique_lock<std::mutex> lock(mutex);
+				if (!finished.wait_for(lock, std::chrono::milliseconds(100), [this]() { return done; }))
+				{
+					// A blocked operation cannot be unwound or safely detached.
+					std::fprintf(stderr, "Test %s failed: operation timed out after 100 ms; possible signal mutex deadlock\n", testName);
+					std::fflush(stderr);
+					std::_Exit(EXIT_FAILURE);
+				}
+			})
+		{
+		}
+
+		~OperationDeadline()
+		{
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				done = true;
+			}
+			finished.notify_one();
+			watchdog.join();
+		}
+	};
+
+	struct ReenterSignalOnDestroy
+	{
+		lsignal::signal<void()>& signal;
+		int& completedDestructions;
+
+		ReenterSignalOnDestroy(lsignal::signal<void()>& signal, int& completedDestructions)
+			: signal(signal), completedDestructions(completedDestructions)
+		{
+		}
+
+		~ReenterSignalOnDestroy()
+		{
+			(void)signal.empty(); // Takes the same mutex as prune()/clear().
+			++completedDestructions;
+		}
+	};
+
+	lsignal::connection ConnectReentrantCapture(lsignal::signal<void()>& signal, int& completedDestructions)
+	{
+		auto object = std::make_shared<ReenterSignalOnDestroy>(signal, completedDestructions);
+		return signal.connect([object]() { (void)object; }, nullptr);
+		// After returning, only the stored closure owns object.
+	}
+
+	struct DestructorAction
+	{
+		std::function<void()> action;
+		explicit DestructorAction(std::function<void()> action) : action(std::move(action)) {}
+		~DestructorAction() { action(); }
+	};
+
+	lsignal::connection ConnectDestructorAction(lsignal::signal<void()>& signal, std::function<void()> action)
+	{
+		auto object = std::make_shared<DestructorAction>(std::move(action));
+		return signal.connect([object]() { (void)object; }, nullptr);
+	}
+}
+
+void TestPruneOnEmitDestroysClosureOutsideMutex()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0;
+	lsignal::signal<void()> signal;
+	auto connection = ConnectReentrantCapture(signal, destroyed);
+	connection.disconnect();
+	VERIFY_EQ(0, destroyed, "disconnect should defer closure destruction");
+
+	{
+		OperationDeadline deadline(MethodName);
+		signal();
+	}
+	VERIFY_EQ(1, destroyed, "pruning on emit should finish the reentrant destructor exactly once");
+}
+
+void TestPruneOnCopyDestroysClosureOutsideMutex()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0;
+	lsignal::signal<void()> source;
+	auto connection = ConnectReentrantCapture(source, destroyed);
+	connection.disconnect();
+	VERIFY_EQ(0, destroyed, "disconnect should defer closure destruction");
+
+	{
+		OperationDeadline deadline(MethodName);
+		lsignal::signal<void()> copy(source);
+	}
+	VERIFY_EQ(1, destroyed, "copy construction should finish the source's reentrant destructor exactly once");
+}
+
+void TestAssignmentPrunesSourceOutsideMutex()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0;
+	lsignal::signal<void()> source, destination;
+	auto connection = ConnectReentrantCapture(source, destroyed);
+	connection.disconnect();
+	VERIFY_EQ(0, destroyed, "disconnect should defer closure destruction");
+
+	{
+		OperationDeadline deadline(MethodName);
+		destination = source;
+	}
+	VERIFY_EQ(1, destroyed, "assignment should finish the source's reentrant destructor exactly once");
+}
+
+void TestAssignmentClearsDestinationOutsideMutex()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0;
+	lsignal::signal<void()> source, destination;
+	ConnectReentrantCapture(destination, destroyed);
+	VERIFY_EQ(0, destroyed, "the destination should still own its live closure");
+
+	{
+		OperationDeadline deadline(MethodName);
+		destination = source;
+	}
+	VERIFY_EQ(1, destroyed, "assignment should finish the destination's reentrant destructor exactly once");
+}
+
+void TestPrunedDestructorConnectsBeforeEmission()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0, called = 0;
+	lsignal::signal<void()> signal;
+	auto connection = ConnectDestructorAction(signal, [&]()
+	{
+		++destroyed;
+		signal.connect([&]() { ++called; }, nullptr);
+	});
+	connection.disconnect();
+	{
+		OperationDeadline deadline(MethodName);
+		signal();
+	}
+	VERIFY_EQ(1, destroyed, "the disconnected capture should be destroyed once");
+	VERIFY_EQ(1, called, "a destructor's new connection should be included in the outer emission");
+}
+
+void TestPrunedDestructorEmitsSignal()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0, called = 0;
+	lsignal::signal<void()> signal;
+	auto connection = ConnectDestructorAction(signal, [&]() { signal(); ++destroyed; });
+	signal.connect([&]() { ++called; }, nullptr);
+	connection.disconnect();
+	{
+		OperationDeadline deadline(MethodName);
+		signal();
+	}
+	VERIFY_EQ(1, destroyed, "nested emission should finish the capture's destructor once");
+	VERIFY_EQ(2, called, "the live callback should run in both nested and outer emissions");
+}
+
+void TestPrunedDestructorAssignsSignalBeforeEmission()
+{
+	TestRunner::StartTest(MethodName);
+	int oldCalled = 0, newCalled = 0;
+	lsignal::signal<void()> signal, replacement;
+	replacement.connect([&]() { ++newCalled; }, nullptr);
+	auto connection = ConnectDestructorAction(signal, [&]() { signal = replacement; });
+	signal.connect([&]() { ++oldCalled; }, nullptr);
+	connection.disconnect();
+	{
+		OperationDeadline deadline(MethodName);
+		signal();
+	}
+	VERIFY_EQ(0, oldCalled, "emission must not retain a cursor into the replaced callback list");
+	VERIFY_EQ(1, newCalled, "emission should use the callbacks installed by the destructor");
+}
+
+void TestPrunedDestructorDeletesSignal()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0, called = 0;
+	auto* signal = new lsignal::signal<void()>();
+	auto connection = ConnectDestructorAction(*signal, [&]() { delete signal; ++destroyed; });
+	signal->connect([&]() { ++called; }, nullptr);
+	connection.disconnect();
+	{
+		OperationDeadline deadline(MethodName);
+		(*signal)();
+	}
+	VERIFY_EQ(1, destroyed, "the pruning destructor should delete the signal once");
+	VERIFY_EQ(1, called, "internal data should survive deletion until emission finishes");
+}
+
+void TestSignalDestructionReentrantConnectAndEmit()
+{
+	TestRunner::StartTest(MethodName);
+	int destroyed = 0, addedDestroyed = 0, called = 0;
+	bool emptyDuringDestruction = false;
+	std::weak_ptr<DestructorAction> addedCapture;
+	auto* signal = new lsignal::signal<void()>();
+	ConnectDestructorAction(*signal, [&]()
+	{
+		emptyDuringDestruction = signal->empty();
+		auto object = std::make_shared<DestructorAction>([&]() { ++addedDestroyed; });
+		addedCapture = object;
+		signal->connect([object, &called]() { ++called; }, nullptr);
+		(*signal)();
+		++destroyed;
+	});
+	{
+		OperationDeadline deadline(MethodName);
+		delete signal;
+	}
+	VERIFY_TRUE(emptyDuringDestruction, "callbacks must be detached before destroying their captures");
+	VERIFY_EQ(1, destroyed, "the original destructor should finish once");
+	VERIFY_EQ(0, called, "a signal being destroyed must not restart emission");
+	VERIFY_EQ(1, addedDestroyed, "a callback added during destruction must also release its capture");
+	VERIFY_TRUE(addedCapture.expired(), "reentrant connect must not leak the new callback");
 }
 
 //----------------------------------------------------------------------------
@@ -555,6 +794,15 @@ void CallLifetimeTests()
 	ExecuteTest(TestEmptyAfterDisconnect);
 	ExecuteTest(TestEmptyAfterOwnerDestroyed);
 	ExecuteTest(TestDeferredPruneAfterEmission);
+	ExecuteTest(TestPruneOnEmitDestroysClosureOutsideMutex);
+	ExecuteTest(TestPruneOnCopyDestroysClosureOutsideMutex);
+	ExecuteTest(TestAssignmentPrunesSourceOutsideMutex);
+	ExecuteTest(TestAssignmentClearsDestinationOutsideMutex);
+	ExecuteTest(TestPrunedDestructorConnectsBeforeEmission);
+	ExecuteTest(TestPrunedDestructorEmitsSignal);
+	ExecuteTest(TestPrunedDestructorAssignsSignalBeforeEmission);
+	ExecuteTest(TestPrunedDestructorDeletesSignal);
+	ExecuteTest(TestSignalDestructionReentrantConnectAndEmit);
 
 	ExecuteTest(TestDisconnectLaterConnectionDuringEmission);
 	ExecuteTest(TestDestroyOwnerDuringEmission);

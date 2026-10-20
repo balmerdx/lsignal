@@ -252,6 +252,47 @@ namespace lsignal
 					::operator delete(n);
 			}
 
+			// Nodes unlinked by prune()/clear(), in their original order,
+			// destroyed (callable included) by destroy_all() or the destructor.
+			// A callable's destructor may re-enter the same signal and lock its
+			// non-recursive mutex, so never destroy them under that mutex:
+			// declare the holder BEFORE the lock it must outlive.
+			struct detached_nodes
+			{
+				node* head = nullptr;
+				node* tail = nullptr;
+
+				detached_nodes() = default;
+				detached_nodes(const detached_nodes&) = delete;
+				detached_nodes& operator= (const detached_nodes&) = delete;
+
+				~detached_nodes()
+				{
+					destroy_all();
+				}
+
+				void push_back(node* n)
+				{
+					n->next = nullptr;
+					if (tail) tail->next = n; else head = n;
+					tail = n;
+				}
+
+				void destroy_all()
+				{
+					while (head)
+					{
+						node* n = head;
+						head = n->next;
+						if (n->ctx)
+							n->destroy(n->ctx);
+						release(n->connection);
+						deallocate_node_block(n);
+					}
+					tail = nullptr;
+				}
+			};
+
 			mutable std::mutex mutex;
 			std::atomic<bool> locked{false};
 			//Starts at 1: the reference implicitly owned by the signal_base
@@ -266,7 +307,12 @@ namespace lsignal
 
 			~signal_impl()
 			{
-				clear();
+				//a destroyed callable may connect() to this very signal again
+				while (head)
+				{
+					detached_nodes all;
+					clear(all);
+				}
 			}
 
 			bool empty() const
@@ -284,24 +330,18 @@ namespace lsignal
 			}
 
 			//caller must hold mutex
-			void clear()
+			void clear(detached_nodes& out)
 			{
-				node* n = head;
-				while (n)
+				if (head)
 				{
-					node* next_n = n->next;
-					//A node only ever reaches this list already fully
-					//constructed (add_callback), so ctx is always live here.
-					n->destroy(n->ctx);
-					release(n->connection);
-					deallocate_node_block(n);
-					n = next_n;
+					if (out.tail) out.tail->next = head; else out.head = head;
+					out.tail = tail;
 				}
 				head = tail = nullptr;
 			}
 
 			//caller must hold mutex
-			void prune()
+			void prune(detached_nodes& out)
 			{
 				node* prev = nullptr;
 				node* n = head;
@@ -312,9 +352,7 @@ namespace lsignal
 					{
 						if (prev) prev->next = next_n; else head = next_n;
 						if (n == tail) tail = prev;
-						n->destroy(n->ctx);
-						release(n->connection);
-						deallocate_node_block(n);
+						out.push_back(n);
 					}
 					else
 					{
@@ -380,11 +418,30 @@ namespace lsignal
 				return;
 			}
 
-			d->refcount.fetch_add(1, std::memory_order_relaxed);
+			if (d->refcount.fetch_add(1, std::memory_order_relaxed) == 0)
+			{
+				//~signal_impl is running and one of the callables it destroys
+				//emits this signal - there is nothing left to call
+				d->refcount.fetch_sub(1, std::memory_order_relaxed);
+				_d = nullptr;
+				_active = false;
+				return;
+			}
 
-			std::lock_guard<std::mutex> locker(d->mutex);
+			std::unique_lock<std::mutex> locker(d->mutex);
 			if (d->emit_count == 0)
-				d->prune();
+			{
+				//Destroy pruned callables before this emission is armed: their
+				//destructors may re-enter the signal, even assign to it.
+				signal_impl::detached_nodes pruned;
+				d->prune(pruned);
+				if (pruned.head)
+				{
+					locker.unlock();
+					pruned.destroy_all();
+					locker.lock();
+				}
+			}
 
 			if (d->locked || d->head == nullptr)
 			{
@@ -464,6 +521,7 @@ namespace lsignal
 			//automatically freed if the body below throws partway through
 			//copy_from (e.g. a connected callable's copy ctor throws) -
 			//release it manually so a failed signal copy doesn't leak.
+			signal_impl::detached_nodes garbage;
 			try
 			{
 				signal_impl* data = _data;
@@ -478,7 +536,7 @@ namespace lsignal
 				//deleted connections here would invalidate that iteration,
 				//so defer it just like a fresh emission does.
 				if (rhs_data->emit_count == 0)
-					rhs_data->prune();
+					rhs_data->prune(garbage);
 
 				data->locked = rhs_data->locked.load();
 				data->copy_from(*rhs_data);
@@ -498,17 +556,18 @@ namespace lsignal
 			signal_impl* data = _data;
 			signal_impl* rhs_data = rhs._data;
 
+			signal_impl::detached_nodes garbage;
 			std::unique_lock<std::mutex> lock_own(data->mutex, std::defer_lock);
 			std::unique_lock<std::mutex> lock_rhs(rhs_data->mutex, std::defer_lock);
 			std::lock(lock_own, lock_rhs);
 
 			//see signal_base(const signal_base&) above for why this is deferred
 			if (rhs_data->emit_count == 0)
-				rhs_data->prune();
+				rhs_data->prune(garbage);
 
 			data->locked = rhs_data->locked.load();
 
-			data->clear();
+			data->clear(garbage);
 			data->copy_from(*rhs_data);
 
 			return *this;

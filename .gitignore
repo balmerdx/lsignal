@@ -1,6 +1,8 @@
-lsignal
 /build/
 /test_debug_information/
 \.vscode
 \.DS_Store
+tmp/
+bugs.md
+ext_use
 

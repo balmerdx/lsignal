@@ -253,7 +253,19 @@ namespace lsignal
 			mutable std::mutex _mutex;
 			std::atomic<bool> _locked{false};
 			int _signal_called_count = 0;
+			bool _destroying = false; // Prevent resurrection during ~signal_impl.
 			std::list<erased_entry> _callbacks;
+
+			~signal_impl()
+			{
+				_destroying = true;
+				// Captured objects may connect more callbacks during destruction.
+				while (!_callbacks.empty())
+				{
+					std::list<erased_entry> detached;
+					detached.splice(detached.end(), _callbacks);
+				}
+			}
 
 			bool is_locked() const { return _locked; }
 			void set_lock(const bool lock) { _locked = lock; }
@@ -273,16 +285,19 @@ namespace lsignal
 			}
 
 			//caller must hold _mutex
-			void delete_deferred_internal()
+			void delete_deferred_internal(std::list<erased_entry>& detached)
 			{
-				auto it_to_remove = std::remove_if(_callbacks.begin(), _callbacks.end(),
-					[](const erased_entry& e) -> bool { return e.connection->deleted; });
-				_callbacks.erase(it_to_remove, _callbacks.end());
+				for (auto it = _callbacks.begin(); it != _callbacks.end(); )
+				{
+					auto current = it++;
+					if (current->connection->deleted)
+						detached.splice(detached.end(), _callbacks, current);
+				}
 			}
 
 			void copy_callbacks(const std::list<erased_entry>& callbacks)
 			{
-				_callbacks.clear();
+				// Caller has detached the previous callbacks before cloning.
 				for (auto iter = callbacks.begin(); iter != callbacks.end(); ++iter)
 				{
 					const erased_entry& src = *iter;
@@ -434,6 +449,7 @@ namespace lsignal
 		detail::signal_impl* data = _data.get();
 		detail::signal_impl* rhs_data = rhs._data.get();
 
+		std::list<detail::erased_entry> detached;
 		std::unique_lock<std::mutex> lock_own(data->_mutex, std::defer_lock);
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
@@ -443,10 +459,11 @@ namespace lsignal
 		//connections here would invalidate that iteration, so defer it
 		//just like operator() does.
 		if (rhs_data->_signal_called_count == 0)
-			rhs_data->delete_deferred_internal();
+			rhs_data->delete_deferred_internal(detached);
 
 		data->_locked = rhs_data->_locked.load();
 
+		detached.splice(detached.end(), data->_callbacks);
 		data->copy_callbacks(rhs_data->_callbacks);
 	}
 
@@ -459,16 +476,18 @@ namespace lsignal
 		detail::signal_impl* data = _data.get();
 		detail::signal_impl* rhs_data = rhs._data.get();
 
+		std::list<detail::erased_entry> detached;
 		std::unique_lock<std::mutex> lock_own(data->_mutex, std::defer_lock);
 		std::unique_lock<std::mutex> lock_rhs(rhs_data->_mutex, std::defer_lock);
 
 		std::lock(lock_own, lock_rhs);
 		//see signal(const signal&) above for why this is deferred
 		if (rhs_data->_signal_called_count == 0)
-			rhs_data->delete_deferred_internal();
+			rhs_data->delete_deferred_internal(detached);
 
 		data->_locked = rhs_data->_locked.load();
 
+		detached.splice(detached.end(), data->_callbacks);
 		data->copy_callbacks(rhs_data->_callbacks);
 
 		return *this;
@@ -520,12 +539,26 @@ namespace lsignal
 	{
 		detail::signal_impl* data = _data.get();
 
+		std::shared_ptr<detail::signal_impl> data_store;
 		typename std::list<detail::erased_entry>::const_iterator cfirst, clast;
 
 		{
-			std::lock_guard<std::mutex> locker(data->_mutex);
+			std::unique_lock<std::mutex> locker(data->_mutex);
+			if (data->_destroying)
+				return R();
+			data_store = _data;
 			if (data->_signal_called_count == 0)
-				data->delete_deferred_internal();
+			{
+				std::list<detail::erased_entry> detached;
+				data->delete_deferred_internal(detached);
+				if (!detached.empty())
+				{
+					// Reentrant destruction must finish before snapshotting the list.
+					locker.unlock();
+					detached.clear();
+					locker.lock();
+				}
+			}
 
 			if (data->_locked || data->_callbacks.empty())
 				return R();
@@ -537,7 +570,6 @@ namespace lsignal
 			--clast;
 		}
 
-		std::shared_ptr<detail::signal_impl> data_store(_data);
 
 		//Decrements _signal_called_count on scope exit, including when a
 		//callback throws - otherwise an exception would leave the count
