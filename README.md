@@ -9,6 +9,12 @@ slot system which is based on C++17 code.
 - fix delete self/recursive call and other connect/disconnect management 
 - safe multithread
 
+## New performance improvements
+Now, when creating a new connection, there is one less new allocation.
+
+When subscribing to an `lsignal::signal<void(std::string)>`, you can use a `const` reference; this avoids copying the argument for multiple subscribers.
+`signal.connect([](const std::string& arg){...})`
+
 ### How to use
 
 lsignal comes in two forms, in their own directories - pick one, they're
@@ -56,12 +62,15 @@ Result of this function is a instance of class `connection`.
 
 When signal is emitted return value will be the result of executing last connected callback.
 
-Arguments are passed to every connected callback as lvalues (copied, not moved), the same
-way `boost::signals2` does it - so a callback that happens to move out of its argument
-does not leave later callbacks in the same emission with a moved-from value. As a
-consequence, a signal whose signature takes a move-only argument by value
-(e.g. `lsignal::signal<void(std::unique_ptr<T>)>`) will fail to compile - this is
-inherent to multicasting the same argument to several callbacks, not specific to lsignal.
+Non-scalar arguments declared by value in the signal are passed internally as
+const references to the signal call's own copies. A callback taking `const T&`
+adds no copy; a callback taking `T` gets one independent copy. Scalars are passed
+by value and reference arguments keep their declared reference types. Moving
+from a callback's own copy cannot empty the argument seen by later callbacks.
+A by-value callback therefore requires a copyable argument; move-only values
+can be observed by callbacks taking `const&`. Emitting a signal with a `T&&`
+argument is rejected with a diagnostic, since all callbacks would share the
+same movable object.
 
 ##### connection
 

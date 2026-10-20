@@ -246,13 +246,77 @@ void TestArgumentCopyCount()
 	CopyCounter arg(3);
 	sig(arg);
 
-	//One copy into operator()'s own by-value parameter, plus one copy into
-	//std::function::operator()'s own by-value parameter per callback (this
-	//is why arguments stay intact across callbacks after the lvalue-passing
-	//fix); then std::function forwards its own already-copied local as an
-	//rvalue into the target, i.e. one move per callback.
+	// One copy into operator(), then one into each by-value callback.
+	// Internal dispatch borrows operator()'s copy without an intermediate move.
 	VERIFY_EQ(1 + connections_count, CopyCounter::copy_count, "copy count should match connections_count + 1");
-	VERIFY_EQ(connections_count, CopyCounter::move_count, "move count should match connections_count");
+	VERIFY_EQ(0, CopyCounter::move_count, "dispatch should not introduce intermediate moves");
+}
+
+void TestValueArgumentsBorrowedByConstReferenceCallbacks()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::signal<void(CopyCounter, CopyCounter, CopyCounter)> signal;
+	int seen = 0;
+	for (int i = 0; i < 3; ++i)
+		signal.connect([&](const CopyCounter& a, const CopyCounter& b, const CopyCounter& c)
+		{
+			seen += a.value + b.value + c.value;
+		}, nullptr);
+	CopyCounter a(1), b(2), c(3);
+	CopyCounter::Reset();
+	signal(a, b, c);
+	VERIFY_EQ(3, CopyCounter::copy_count, "only the three operator() parameters should be copied");
+	VERIFY_EQ(0, CopyCounter::move_count, "const-reference callbacks need no moves");
+	VERIFY_EQ(18, seen, "every subscriber must observe all three intact arguments");
+}
+
+void TestValueArgumentMemberDispatchCopyCount()
+{
+	TestRunner::StartTest(MethodName);
+	struct Receiver
+	{
+		int* seen;
+		int Receive(CopyCounter value) { *seen += value.value; return value.value; }
+		int ReceiveConst(CopyCounter value) const { *seen += value.value; return value.value + 1; }
+	};
+	int seen = 0;
+	Receiver receiver{&seen};
+	lsignal::signal<int(CopyCounter)> signal;
+	signal.connect(&receiver, &Receiver::Receive, nullptr);
+	signal.connect(&receiver, &Receiver::ReceiveConst, nullptr);
+	CopyCounter argument(7);
+	CopyCounter::Reset();
+	int result = signal(argument);
+	VERIFY_EQ(3, CopyCounter::copy_count, "member dispatch needs one input copy and one per by-value method");
+	VERIFY_EQ(0, CopyCounter::move_count, "member wrappers must not introduce moves");
+	VERIFY_EQ(14, seen, "both ordinary and const methods must see the original value");
+	VERIFY_EQ(8, result, "non-void emission must return the last method's result");
+}
+
+void TestLongStringValueArgumentsRemainIndependent()
+{
+	TestRunner::StartTest(MethodName);
+	const std::string a(4096, 'a'), b(4096, 'b'), c(4096, 'c');
+	lsignal::signal<void(std::string, std::string, std::string)> signal;
+	int seen = 0;
+	signal.connect([&](std::string x, std::string y, std::string z)
+	{
+		std::string moved = std::move(x);
+		y.clear();
+		z.assign("changed");
+		VERIFY_EQ(a, moved, "a by-value callback can move from its own copy");
+		++seen;
+	}, nullptr);
+	for (int i = 0; i < 2; ++i)
+		signal.connect([&](const std::string& x, const std::string& y, const std::string& z)
+		{
+			VERIFY_EQ(a, x, "earlier moves must not affect later subscribers");
+			VERIFY_EQ(b, y, "earlier clears must not affect later subscribers");
+			VERIFY_EQ(c, z, "earlier mutations must not affect later subscribers");
+			++seen;
+		}, nullptr);
+	signal(a, b, c);
+	VERIFY_EQ(3, seen, "all three callbacks must run");
 }
 
 //----------------------------------------------------------------------------
@@ -686,6 +750,9 @@ void CallApiTests()
 	ExecuteTest(TestReferenceArgument);
 	ExecuteTest(TestConstReferenceArgument);
 	ExecuteTest(TestArgumentCopyCount);
+	ExecuteTest(TestValueArgumentsBorrowedByConstReferenceCallbacks);
+	ExecuteTest(TestValueArgumentMemberDispatchCopyCount);
+	ExecuteTest(TestLongStringValueArgumentsRemainIndependent);
 
 	ExecuteTest(TestConnectConstMemberFunction);
 	ExecuteTest(TestConnectBaseClassMemberFunction);

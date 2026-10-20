@@ -249,19 +249,20 @@ namespace lsignal
 		//Return last called signal result.
 		R operator() (Args... args) const;
 	private:
-		using raw_invoke_t = R(*)(void*, Args...);
+		//A by-value signal argument that is not std::is_scalar reaches every
+		//callback as a const reference to operator()'s own copy: a by-value
+		//target copies it once, a const& target not at all, and no callback
+		//can move from what the next one sees. Scalars are passed by value,
+		//references as is.
+		template<typename A>
+		using thunk_arg_t = std::conditional_t<std::is_reference_v<A> || std::is_scalar_v<A>, A, const A&>;
+
+		using raw_invoke_t = R(*)(void*, thunk_arg_t<Args>...);
 
 		template<typename F>
-		static R invoke_thunk(void* ctx, Args... args)
+		static R invoke_thunk(void* ctx, thunk_arg_t<Args>... args)
 		{
-			//std::forward here (not a plain lvalue pass) is what makes the
-			//copy/move-count contract match the historical std::function-based
-			//behavior exactly: args are this thunk's own by-value copy (made
-			//when the emit loop called us with lvalues), so forwarding them
-			//as rvalues into the actual target is safe - it can't affect any
-			//other connected callback's view of the shared arguments in
-			//signal::operator().
-			return (*static_cast<F*>(ctx))(std::forward<Args>(args)...);
+			return (*static_cast<F*>(ctx))(static_cast<thunk_arg_t<Args>&&>(args)...);
 		}
 
 		//Destroys the callable in place - does not free the block it lives
@@ -326,7 +327,7 @@ namespace lsignal
 	template<typename T, typename Tfn>
 	connection signal<R(Args...)>::connect(T *p, R(Tfn::*fn)(Args...), slot *owner)
 	{
-		auto mem_fn = [fn, p](Args&&... args){ return (p->*fn)(std::forward<decltype(args)>(args)...); };
+		auto mem_fn = [fn, p](thunk_arg_t<Args>... args) { return (p->*fn)(static_cast<thunk_arg_t<Args>&&>(args)...); };
 		return create_connection(std::move(mem_fn), owner);
 	}
 
@@ -334,13 +335,16 @@ namespace lsignal
 	template<typename T, typename Tfn>
 	connection signal<R(Args...)>::connect(T *p, R(Tfn::*fn)(Args...) const, slot *owner)
 	{
-		auto mem_fn = [fn, p](Args&&... args) { return (p->*fn)(std::forward<decltype(args)>(args)...); };
+		auto mem_fn = [fn, p](thunk_arg_t<Args>... args) { return (p->*fn)(static_cast<thunk_arg_t<Args>&&>(args)...); };
 		return create_connection(std::move(mem_fn), owner);
 	}
 
 	template<typename R, typename... Args>
 	R signal<R(Args...)>::operator() (Args... args) const
 	{
+		static_assert((!std::is_rvalue_reference_v<Args> && ...),
+			"lsignal: a T&& signal argument cannot be emitted - every callback would get the same movable object");
+
 		detail::emit_scope scope(_data);
 
 		void* ctx;
