@@ -30,6 +30,7 @@ Cloned to https://github.com/balmerdx/lsignal
 
 #include "lsignal_defines.h"
 
+#include <cstddef>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -111,6 +112,9 @@ namespace lsignal
 		slot& operator= (const slot&) = delete;
 
 		void disconnect();
+		// Counts stored owner records without pruning. active counts only
+		// deleted == false (including locked records and destroyed signals).
+		std::size_t connection_count(bool active = true) const;
 	private:
 		detail::slot_impl* _impl;
 	};

@@ -29,6 +29,7 @@ Cloned to https://github.com/balmerdx/lsignal
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <list>
 #include <memory>
@@ -107,9 +108,16 @@ namespace lsignal
 		virtual ~slot();
 
 		void disconnect();
+		// Counts stored owner records without pruning. active counts only
+		// deleted == false (including locked records and destroyed signals).
+		std::size_t connection_count(bool active = true) const;
 	private:
 		mutable std::mutex _mutex;
 		std::vector<connection_cleaner> _cleaners;
+		static constexpr std::size_t min_prune_at = 16;
+		std::size_t _prune_at = min_prune_at;
+		// Caller holds _mutex; sweep only periodically to amortize the scan.
+		void add_cleaner(const std::shared_ptr<connection_data>& connection);
 	};
 
 	inline connection_data::connection_data()
@@ -176,6 +184,18 @@ namespace lsignal
 		disconnect();
 	}
 
+	inline std::size_t slot::connection_count(bool active) const
+	{
+		std::lock_guard<std::mutex> locker(_mutex);
+		if (!active)
+			return _cleaners.size();
+		std::size_t count = 0;
+		for (const connection_cleaner& cleaner : _cleaners)
+			if (!cleaner.data->deleted.load())
+				++count;
+		return count;
+	}
+
 	inline void slot::disconnect()
 	{
 		decltype(_cleaners) cleaners;
@@ -183,6 +203,7 @@ namespace lsignal
 			std::lock_guard<std::mutex> locker(_mutex);
 			cleaners = _cleaners;
 			_cleaners.clear();
+			_prune_at = min_prune_at;
 		}
 
 		for (auto iter = cleaners.cbegin(); iter != cleaners.cend(); ++iter)
@@ -190,6 +211,25 @@ namespace lsignal
 			const connection_cleaner& cleaner = *iter;
 			cleaner.data->deleted = true;
 		}
+	}
+
+	inline void slot::add_cleaner(const std::shared_ptr<connection_data>& connection)
+	{
+		if (_cleaners.size() >= _prune_at)
+		{
+			// Inspect records by reference: a temporary shared_ptr copy would
+			// hide the case where this slot is the last remaining owner.
+			auto removed = std::remove_if(_cleaners.begin(), _cleaners.end(),
+				[](const connection_cleaner& cleaner)
+				{
+					return cleaner.data->deleted.load() || cleaner.data.use_count() == 1;
+				});
+			_cleaners.erase(removed, _cleaners.end());
+			_prune_at = std::max(min_prune_at, _cleaners.size() * 2);
+		}
+		connection_cleaner cleaner;
+		cleaner.data = connection;
+		_cleaners.emplace_back(cleaner);
 	}
 
 	namespace detail
@@ -313,13 +353,10 @@ namespace lsignal
 			//caller must hold _mutex
 			void add_cleaner(slot* owner, std::shared_ptr<connection_data>& connection)
 			{
-				connection_cleaner cleaner;
-				cleaner.data = connection;
-
 				if (owner != nullptr)
 				{
 					std::lock_guard<std::mutex> locker(owner->_mutex);
-					owner->_cleaners.emplace_back(cleaner);
+					owner->add_cleaner(connection);
 				}
 			}
 		};

@@ -91,6 +91,18 @@ foo f;
 s.connect([](){ ... }, &f);
 ```
 
+`slot::connection_count(bool active = true) const` returns the number of stored
+ownership records with `deleted == false`. Locked connections are included.
+Pass `false` to count all stored records, including disconnected ones. Counting
+locks the owner's list but does not clean it. A destroyed signal can leave a
+record with `deleted == false`, so the default count does not guarantee that
+the associated signals still exist.
+
+When a new subscription is added, `slot` periodically removes records that are
+marked deleted or owned only by the slot. Cleanup starts at 16 stored records;
+the next threshold is twice the remaining count, with a minimum of 16.
+`slot::disconnect()` clears the records and resets this threshold.
+
 ### Performance
 
 `main.cpp` benchmarks `signal::operator()` for `lsignal` against `boost::signals2`,

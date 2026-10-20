@@ -779,6 +779,262 @@ void TestSlotOutlivesSignal()
 	//the signals it was registered with are already gone.
 }
 
+// WAR-26570, finding 4: owner records must not grow with dead subscriptions.
+void TestSlotConnectionCount()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	const lsignal::slot& view = owner;
+	VERIFY_EQ(std::size_t{0}, view.connection_count(), "a new slot has no active records");
+	VERIFY_EQ(std::size_t{0}, view.connection_count(false), "a new slot has no stored records");
+
+	lsignal::signal<void()> first, second;
+	auto disconnected = first.connect([]() {}, &owner);
+	auto locked = first.connect([]() {}, &owner);
+	second.connect([]() {}, &owner);
+	locked.set_lock(true);
+	VERIFY_EQ(std::size_t{3}, view.connection_count(), "locked connections still count as active");
+	VERIFY_EQ(view.connection_count(true), view.connection_count(), "active must default to true");
+	VERIFY_EQ(std::size_t{3}, view.connection_count(false), "all three records should be stored");
+
+	disconnected.disconnect();
+	VERIFY_EQ(std::size_t{2}, view.connection_count(), "individual disconnect removes one active record");
+	VERIFY_EQ(std::size_t{3}, view.connection_count(false), "counting must not prune deleted records");
+	first.disconnect_all();
+	VERIFY_EQ(std::size_t{1}, view.connection_count(true), "disconnect_all affects only its signal's records");
+	second.disconnect_all();
+	VERIFY_EQ(std::size_t{0}, view.connection_count(), "all records are now marked deleted");
+	VERIFY_EQ(std::size_t{3}, view.connection_count(false), "disconnect_all leaves owner records stored");
+
+	owner.disconnect();
+	VERIFY_EQ(std::size_t{0}, view.connection_count(), "slot::disconnect clears active records");
+	VERIFY_EQ(std::size_t{0}, view.connection_count(false), "slot::disconnect clears every stored record");
+}
+
+void TestSlotConnectionCountAfterSignalDestroyed()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	{
+		lsignal::signal<void()> signal;
+		signal.connect([]() {}, &owner);
+	}
+	VERIFY_EQ(std::size_t{1}, owner.connection_count(), "signal destruction does not set the deleted flag");
+	VERIFY_EQ(std::size_t{1}, owner.connection_count(false), "counting must not remove an orphan record");
+	owner.disconnect();
+	VERIFY_EQ(std::size_t{0}, owner.connection_count(false), "explicit owner disconnect removes the orphan record");
+}
+
+namespace
+{
+	// Allow delayed cleanup (tmp/01 sweeps from 16 records), without requiring
+	// its exact threshold or immediate removal. Check both batches, not capacity.
+	void VerifyBoundedSlotRecords(const std::array<std::size_t, 2>& counts)
+	{
+		for (std::size_t count : counts)
+		{
+			const auto message = "dead subscription records should stay bounded at 64; actual: " + std::to_string(count);
+			VERIFY_TRUE(count <= 64, message.c_str());
+		}
+	}
+}
+
+void TestSlotRecordsBoundedAfterSignalDestruction()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	std::array<std::size_t, 2> counts;
+	for (auto& count : counts)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			lsignal::signal<void()> signal;
+			signal.connect([]() {}, &owner); // Keep no connection handle alive.
+		}
+		count = owner.connection_count(false);
+	}
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotRecordsBoundedAfterConnectionDisconnect()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	lsignal::signal<void()> signal;
+	std::array<std::size_t, 2> counts;
+	for (auto& count : counts)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			auto connection = signal.connect([]() {}, &owner);
+			connection.disconnect();
+			signal();
+		}
+		VERIFY_EQ(std::size_t{0}, owner.connection_count(), "all subscriptions should be marked deleted");
+		count = owner.connection_count(false);
+	}
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotRecordsBoundedAfterDisconnectAll()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	lsignal::signal<void()> signal;
+	std::array<std::size_t, 2> counts;
+	for (auto& count : counts)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			signal.connect([]() {}, &owner);
+			signal.disconnect_all();
+			signal();
+		}
+		VERIFY_EQ(std::size_t{0}, owner.connection_count(), "disconnect_all should mark every subscription deleted");
+		count = owner.connection_count(false);
+	}
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotRecordCleanupPreservesLiveSubscriptions()
+{
+	TestRunner::StartTest(MethodName);
+	std::array<int, 8> calls{};
+	lsignal::slot owner;
+	lsignal::signal<void()> live, copied, churn;
+	for (std::size_t i = 0; i < 4; ++i)
+		live.connect([&, i]() { ++calls[i]; }, &owner);
+	{
+		lsignal::signal<void()> original;
+		for (std::size_t i = 4; i < calls.size(); ++i)
+			original.connect([&, i]() { ++calls[i]; }, &owner);
+		copied = original;
+	}
+	VERIFY_EQ(std::size_t{8}, owner.connection_count(), "a signal copy shares the existing owner records");
+	std::array<std::size_t, 2> counts;
+	for (std::size_t batch = 0; batch < counts.size(); ++batch)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			auto connection = churn.connect([]() {}, &owner);
+			connection.disconnect();
+			churn();
+		}
+		counts[batch] = owner.connection_count(false);
+		VERIFY_EQ(std::size_t{8}, owner.connection_count(), "cleanup must preserve all eight live owner records");
+		live();
+		copied();
+		for (int called : calls)
+			VERIFY_EQ(static_cast<int>(batch + 1), called, "every live callback must survive periodic cleanup");
+	}
+	owner.disconnect();
+	live();
+	copied();
+	for (int called : calls)
+		VERIFY_EQ(2, called, "owner disconnect must still silence live and copied signals");
+	VERIFY_EQ(std::size_t{0}, owner.connection_count(false), "owner disconnect must clear all stored records");
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotDisconnectResetsCleanupThreshold()
+{
+	TestRunner::StartTest(MethodName);
+	int calls = 0;
+	lsignal::slot owner;
+	lsignal::signal<void()> signal;
+	for (int i = 0; i < 256; ++i)
+		signal.connect([&]() { ++calls; }, &owner);
+	VERIFY_EQ(std::size_t{256}, owner.connection_count(), "cleanup must retain a large set of live subscriptions");
+	signal();
+	VERIFY_EQ(256, calls, "all live callbacks should still run");
+	owner.disconnect();
+	VERIFY_EQ(std::size_t{0}, owner.connection_count(false), "disconnect must clear the owner records");
+	std::array<std::size_t, 2> counts;
+	for (auto& count : counts)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			auto connection = signal.connect([]() {}, &owner);
+			connection.disconnect();
+			signal();
+		}
+		count = owner.connection_count(false);
+	}
+	VERIFY_EQ(256, calls, "the old callbacks must remain disconnected");
+	VERIFY_EQ(std::size_t{0}, owner.connection_count(), "churn should leave no active subscriptions");
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotCleanupWithLockedConnectionsAndRetainedHandles()
+{
+	TestRunner::StartTest(MethodName);
+	std::array<int, 8> calls{};
+	lsignal::slot owner;
+	lsignal::signal<void()> live, churn;
+	std::vector<lsignal::connection> handles, deletedHandles;
+	for (std::size_t i = 0; i < calls.size(); ++i)
+	{
+		handles.push_back(live.connect([&, i]() { ++calls[i]; }, &owner));
+		if (i < 4)
+			handles.back().set_lock(true);
+	}
+	std::array<std::size_t, 2> counts;
+	for (std::size_t batch = 0; batch < counts.size(); ++batch)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			deletedHandles.push_back(churn.connect([]() {}, &owner));
+			churn.disconnect_all(); // Mark deleted without releasing external handles.
+			churn();
+		}
+		counts[batch] = owner.connection_count(false);
+		VERIFY_EQ(std::size_t{8}, owner.connection_count(), "locked subscriptions must survive while deleted records are swept");
+		live();
+		for (std::size_t i = 0; i < calls.size(); ++i)
+			VERIFY_EQ(i < 4 ? 0 : static_cast<int>(batch + 1), calls[i], "cleanup must preserve callback lock state");
+	}
+	handles[4].disconnect();
+	for (std::size_t i = 0; i < 4; ++i)
+		handles[i].set_lock(false);
+	live();
+	for (std::size_t i = 0; i < calls.size(); ++i)
+		VERIFY_EQ(i < 4 ? 1 : (i == 4 ? 2 : 3), calls[i], "retained handles must still unlock and disconnect after cleanup");
+	const auto beforeDisconnect = calls;
+	owner.disconnect();
+	live();
+	VERIFY_TRUE(beforeDisconnect == calls, "owner disconnect must still silence callbacks with retained handles");
+	VERIFY_EQ(std::size_t{0}, owner.connection_count(false), "owner disconnect must release all records");
+	VerifyBoundedSlotRecords(counts);
+}
+
+void TestSlotCleanupPreservesOrphanWithRetainedHandle()
+{
+	TestRunner::StartTest(MethodName);
+	lsignal::slot owner;
+	lsignal::connection retained;
+	{
+		lsignal::signal<void()> signal;
+		retained = signal.connect([]() {}, &owner);
+	}
+	lsignal::signal<void()> churn;
+	std::array<std::size_t, 2> counts;
+	for (int batch = 0; batch < 2; ++batch)
+	{
+		for (int i = 0; i < 1000; ++i)
+		{
+			auto connection = churn.connect([]() {}, &owner);
+			connection.disconnect();
+			churn();
+		}
+		counts[batch] = owner.connection_count(false);
+		VERIFY_EQ(batch == 0 ? std::size_t{1} : std::size_t{0}, owner.connection_count(),
+			"an orphan must remain until the last external handle is released");
+		// Release without marking deleted, to exercise the last-owner check.
+		retained = lsignal::connection();
+	}
+	VerifyBoundedSlotRecords(counts);
+}
+
 void CallLifetimeTests()
 {
 	ExecuteTest(TestSelfAssignSignal);
@@ -815,4 +1071,13 @@ void CallLifetimeTests()
 	ExecuteTest(TestSlotDisconnectTwice);
 	ExecuteTest(TestSlotWithMultipleSignalsPartialDisconnect);
 	ExecuteTest(TestSlotOutlivesSignal);
+	ExecuteTest(TestSlotConnectionCount);
+	ExecuteTest(TestSlotConnectionCountAfterSignalDestroyed);
+	ExecuteTest(TestSlotRecordsBoundedAfterSignalDestruction);
+	ExecuteTest(TestSlotRecordsBoundedAfterConnectionDisconnect);
+	ExecuteTest(TestSlotRecordsBoundedAfterDisconnectAll);
+	ExecuteTest(TestSlotRecordCleanupPreservesLiveSubscriptions);
+	ExecuteTest(TestSlotDisconnectResetsCleanupThreshold);
+	ExecuteTest(TestSlotCleanupWithLockedConnectionsAndRetainedHandles);
+	ExecuteTest(TestSlotCleanupPreservesOrphanWithRetainedHandle);
 }

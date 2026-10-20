@@ -117,6 +117,33 @@ namespace lsignal
 		{
 			std::mutex mutex;
 			std::vector<connection_data*> cleaners;
+			static constexpr std::size_t min_prune_at = 16;
+			//cleaners.size() at which add_cleaner() next drops dead entries
+			std::size_t prune_at = min_prune_at;
+
+			//caller must hold mutex. Without the periodic sweep, a long-lived
+			//slot that keeps binding to short-lived signals would hold one
+			//entry per bind until the slot itself dies.
+			void add_cleaner(connection_data* d)
+			{
+				if (cleaners.size() >= prune_at)
+				{
+					std::size_t kept = 0;
+					for (connection_data* c : cleaners)
+					{
+						//Dead: disconnected, or this slot holds the last reference
+						//(no list node, no connection handle) - nothing can addref
+						//it again, so the check cannot race.
+						if (c->deleted || c->refcount.load(std::memory_order_acquire) == 1)
+							release(c);
+						else
+							cleaners[kept++] = c;
+					}
+					cleaners.resize(kept);
+					prune_at = kept * 2 > min_prune_at ? kept * 2 : min_prune_at;
+				}
+				cleaners.push_back(d);
+			}
 		};
 	}
 
@@ -131,12 +158,25 @@ namespace lsignal
 		delete _impl;
 	}
 
+	std::size_t slot::connection_count(bool active) const
+	{
+		std::lock_guard<std::mutex> locker(_impl->mutex);
+		if (!active)
+			return _impl->cleaners.size();
+		std::size_t count = 0;
+		for (const connection_data* data : _impl->cleaners)
+			if (!data->deleted.load())
+				++count;
+		return count;
+	}
+
 	void slot::disconnect()
 	{
 		std::vector<connection_data*> cleaners;
 		{
 			std::lock_guard<std::mutex> locker(_impl->mutex);
 			cleaners.swap(_impl->cleaners);
+			_impl->prune_at = detail::slot_impl::min_prune_at;
 		}
 
 		for (connection_data* d : cleaners)
@@ -667,7 +707,7 @@ namespace lsignal
 				try
 				{
 					std::lock_guard<std::mutex> locker(owner->_impl->mutex);
-					owner->_impl->cleaners.push_back(raw->connection);
+					owner->_impl->add_cleaner(raw->connection);
 				}
 				catch (...)
 				{
